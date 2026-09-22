@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+
+# Spark generated outputs and metadata
+output/
+benchmark_output/
+spark-warehouse/
+metastore_db/
+derby.log
+checkpoints/
+logs/
+
+# Generated benchmark data (large files)
+*.parquet
+*.orc
+*.crc
+
+# Keep small reproducible demo input under data/ versioned.
+!data/raw_logs.txt
