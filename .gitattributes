@@ -1,8 +1,12 @@
-# Keep the generated log fixture byte-identical on every platform.
-#
-# With core.autocrlf=true (the Git for Windows default) Git rewrites LF to CRLF
-# on checkout. data/raw_logs.txt is produced by src/generate_logs.py with a
-# fixed seed, so its checksum is part of how we verify the file is reproducible.
-# Without this rule a fresh clone on Windows receives a different file (+1 byte
-# per line) and re-running the generator reports all 10,000 lines as modified.
-data/raw_logs.txt -text
+
+# Chuẩn hóa file text về LF ở mọi máy
+* text=auto
+
+*.py  text eol=lf
+*.sh  text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf
+
+# Dataset demo phải giống byte giữa các máy
+data/raw_logs.txt text eol=lf
+>>>>>>> main
