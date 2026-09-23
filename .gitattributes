@@ -1,0 +1,10 @@
+# Chuẩn hóa file text về LF ở mọi máy
+* text=auto
+
+*.py  text eol=lf
+*.sh  text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf
+
+# Dataset demo phải giống byte giữa các máy
+data/raw_logs.txt text eol=lf
