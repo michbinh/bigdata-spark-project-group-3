@@ -237,12 +237,6 @@ gồm 10.000 dòng:
 
 ### 3.2 spark-submit and Deploy Modes
 
-> **Ghi chú của ID2 gửi ID5 (Tuấn Phong):** phần dưới đây do ID2 soạn dựa trên
-> tài liệu Spark và **chưa được ID5 review**. Đây là **giả định** của ID2 về
-> hướng triển khai, không phải quyết định đã chốt. ID5 sở hữu mục 3 và có toàn
-> quyền sửa, rút gọn hay viết lại. Riêng mục 3.2.6 là số liệu ID2 đo được trên
-> máy thật; phần còn lại là lý thuyết.
-
 #### 3.2.1 Deploy mode quyết định điều gì
 
 Một ứng dụng Spark luôn gồm hai loại tiến trình. **Driver** chạy hàm `main()`,
