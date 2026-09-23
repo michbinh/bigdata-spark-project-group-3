@@ -237,7 +237,190 @@ gồm 10.000 dòng:
 
 ### 3.2 spark-submit and Deploy Modes
 
-<!-- Owner: ID2 + ID5. client vs cluster, Standalone/YARN/Kubernetes. -->
+> **Ghi chú của ID2 gửi ID5 (Tuấn Phong):** phần dưới đây do ID2 soạn dựa trên
+> tài liệu Spark và **chưa được ID5 review**. Đây là **giả định** của ID2 về
+> hướng triển khai, không phải quyết định đã chốt. ID5 sở hữu mục 3 và có toàn
+> quyền sửa, rút gọn hay viết lại. Riêng mục 3.2.6 là số liệu ID2 đo được trên
+> máy thật; phần còn lại là lý thuyết.
+
+#### 3.2.1 Deploy mode quyết định điều gì
+
+Một ứng dụng Spark luôn gồm hai loại tiến trình. **Driver** chạy hàm `main()`,
+dựng `SparkContext`, phân tích lineage, chia job thành stage/task và nhận kết
+quả trả về. **Executor** là tiến trình worker thực thi task và giữ dữ liệu đã
+cache.
+
+Executor **luôn** chạy trên các node của cluster. Điều duy nhất mà
+`--deploy-mode` quyết định là: **Driver chạy ở đâu.**
+
+```text
+client mode                              cluster mode
+-----------------------------------      -----------------------------------
+[Máy submit]                             [Máy submit]
+  └── Driver  ◄──── kết quả ────┐          └── spark-submit (thoát sau khi gửi)
+        │                       │                     │
+        ▼                       │                     ▼
+[Cluster]                       │        [Cluster]
+  Executor 1 ───────────────────┤          Driver  ◄── nằm TRONG cluster
+  Executor 2 ───────────────────┤            ├── Executor 1
+  Executor 3 ───────────────────┘            ├── Executor 2
+                                             └── Executor 3
+```
+
+> `--deploy-mode` **không** liên quan tới `--master local[*]`. Ở chế độ `local`
+> không có cluster nào cả — Driver và Executor cùng nằm trong một JVM trên một
+> máy, và `--deploy-mode` bị bỏ qua.
+
+#### 3.2.2 `--deploy-mode client`
+
+Driver chạy ngay trên máy gõ lệnh `spark-submit`; máy submit trở thành một
+thành phần đang chạy của ứng dụng.
+
+- Log của Driver, `print()` và stack trace hiện thẳng ra terminal; kết quả của
+  `collect()`, `take()`, `show()` hiển thị trực tiếp.
+- Toàn bộ lưu lượng điều phối đi qua đường mạng giữa máy submit và cluster.
+- **Tắt terminal hoặc mất mạng thì ứng dụng chết** — Driver không còn thì
+  Executor cũng bị thu hồi.
+- Máy submit phải cho phép Executor kết nối ngược về Driver; thường không khả
+  thi nếu máy submit nằm sau NAT/VPN hoặc firewall chặn inbound.
+- Driver dùng CPU/RAM của máy cá nhân, nên `collect()` trên tập lớn gây OOM ở
+  chính laptop chứ không phải ở cluster.
+
+**Dùng khi:** phát triển, gỡ lỗi, demo, và notebook tương tác (`spark-shell`,
+`pyspark`, Jupyter — các công cụ này *chỉ* chạy được ở client mode vì cần vòng
+lặp REPL).
+
+#### 3.2.3 `--deploy-mode cluster`
+
+Cluster Manager cấp phát một container/node trong cluster để chạy Driver;
+`spark-submit` chỉ gửi đơn rồi thoát.
+
+- Máy submit có thể tắt ngay sau khi submit, job vẫn chạy tiếp.
+- Driver cùng mạng nội bộ với Executor nên độ trễ điều phối thấp hơn nhiều.
+- Driver dùng tài nguyên cluster, khai báo qua `--driver-memory` /
+  `--driver-cores`.
+- **Không thấy log trực tiếp** — phải lấy qua Spark History Server,
+  `yarn logs -applicationId <id>` hoặc `kubectl logs`.
+- Cluster Manager có thể tự khởi động lại Driver khi nó chết (`--supervise` ở
+  Standalone, `spark.yarn.maxAppAttempts` ở YARN).
+- File phụ thuộc phải nằm ở nơi cluster truy cập được (HDFS, S3) hoặc được gửi
+  kèm — **không** thể trỏ tới đường dẫn cục bộ trên máy submit.
+
+**Dùng khi:** chạy chính thức, job dài, job theo lịch, job submit từ CI/CD.
+
+#### 3.2.4 So sánh client và cluster
+
+| Tiêu chí | `client` | `cluster` |
+|---|---|---|
+| Vị trí Driver | Máy submit | Node trong cluster |
+| Vị trí Executor | Trong cluster | Trong cluster |
+| Xem log Driver | Trực tiếp trên terminal | History Server / `yarn logs` / `kubectl logs` |
+| Tắt máy submit | Ứng dụng chết | Ứng dụng vẫn chạy |
+| Độ trễ mạng điều phối | Cao (qua WAN/VPN) | Thấp (trong cùng cluster) |
+| Tài nguyên Driver | CPU/RAM máy cá nhân | Tài nguyên cluster |
+| Tự khởi động lại Driver | Không | Có (nếu bật) |
+| Yêu cầu mạng | Executor phải kết nối ngược về máy submit | Không cần |
+| Vị trí file phụ thuộc | Đường dẫn cục bộ dùng được | Phải ở nơi chia sẻ được (HDFS/S3) |
+| Shell tương tác | Có | Không |
+| Trường hợp dùng | Dev, debug, demo | Chạy chính thức, job theo lịch |
+
+#### 3.2.5 Ba Cluster Manager
+
+**Cluster Manager** là thành phần cấp phát tài nguyên (CPU, RAM, container).
+Nó trả lời câu hỏi *lấy máy ở đâu để chạy Driver và Executor* — tách biệt với
+câu hỏi *Driver chạy ở đâu* của deploy mode.
+
+> Mesos từng là Cluster Manager thứ tư nhưng đã bị deprecated từ Spark 3.2 và
+> gỡ bỏ ở Spark 4.0, nên không trình bày ở đây.
+
+**Standalone** — đi kèm sẵn trong bản phân phối Spark, gồm tiến trình Master và
+các tiến trình Worker; không cần cài gì ngoài Spark và JVM.
+`--master spark://<master-host>:7077`
+
+- *Ưu:* cài đặt đơn giản nhất, gọn nhẹ, phù hợp cluster chỉ chạy Spark.
+- *Nhược:* chỉ chạy được Spark, không chia sẻ tài nguyên với Hive/Flink/
+  MapReduce; hàng đợi và phân quyền sơ khai (mặc định FIFO); Master là điểm
+  chết đơn lẻ nếu không cấu hình HA bằng ZooKeeper.
+
+**YARN** — bộ quản lý tài nguyên của hệ sinh thái Hadoop. Spark chạy như một
+ứng dụng YARN, trong đó ApplicationMaster đàm phán container với
+ResourceManager. `--master yarn`
+
+- *Ưu:* chín muồi trong doanh nghiệp; chia sẻ cluster giữa nhiều framework; có
+  hàng đợi phân cấp, quota và ưu tiên (Capacity/Fair Scheduler); tích hợp sẵn
+  Kerberos; tận dụng được data locality với HDFS.
+- *Nhược:* phải vận hành cả cụm Hadoop; cấu hình phức tạp; container dùng chung
+  thư viện ở tầng host nên khó cô lập phụ thuộc giữa các job.
+- Ở `cluster` mode Driver chạy *bên trong* ApplicationMaster; ở `client` mode
+  ApplicationMaster chỉ xin container còn Driver ở máy submit.
+
+**Kubernetes** — từ Spark 3.1 đã generally available. Driver và mỗi Executor
+chạy trong một Pod riêng.
+`--master k8s://https://<api-server>:<port>`
+
+- *Ưu:* cô lập phụ thuộc triệt để nhờ container image riêng cho từng job; hợp
+  hạ tầng cloud-native và CI/CD; dùng chung cluster với các workload khác.
+- *Nhược:* cần biết vận hành Kubernetes; thời gian khởi động Pod làm tăng độ
+  trễ với job ngắn; shuffle service và lưu trữ tạm phải cấu hình thêm.
+- Chủ yếu dùng `cluster` mode; `client` mode yêu cầu Driver nằm trong Pod có
+  địa chỉ mà Executor gọi ngược về được.
+
+| Tiêu chí | Standalone | YARN | Kubernetes |
+|---|---|---|---|
+| Cần cài thêm | Không (kèm Spark) | Cụm Hadoop | Cụm Kubernetes |
+| Chia sẻ với framework khác | Không | Có | Có |
+| Cô lập phụ thuộc | Yếu | Trung bình | Mạnh (container image) |
+| Hàng đợi / quota | Sơ khai (FIFO) | Mạnh (Capacity/Fair) | Qua namespace + quota |
+| Bảo mật / xác thực | Cơ bản | Kerberos | RBAC + Secret |
+| Độ phức tạp vận hành | Thấp | Cao | Cao |
+| Data locality với HDFS | Nếu cùng node | Tốt nhất | Yếu (lưu trữ tách rời) |
+| Deploy mode hỗ trợ | client + cluster | client + cluster | chủ yếu cluster |
+
+#### 3.2.6 Ràng buộc đo được: Python worker không kế thừa `sys.path`
+
+Phần này là **số liệu đo trên máy thật**, không phải lý thuyết.
+
+Trên PySpark 3.5 — đúng phiên bản `requirements.txt` đang pin (`>=3.5,<4`) —
+Python worker **không kế thừa `sys.path` của Driver**. Nếu phát lệnh từ thư mục
+khác gốc repo, worker chết ngay ở stage 0: phía JVM báo `Connection reset by
+peer`, thực chất là worker không `import` được module `rdd_processing` khi
+unpickle hàm tham chiếu tới nó.
+
+| Phiên bản | Chạy từ gốc repo | Chạy từ thư mục khác |
+|---|---|---|
+| PySpark 4.2.0 | 5/5 PASS | 5/5 PASS |
+| **PySpark 3.5.9** | **3/3 PASS** | **0/3 — worker chết** |
+
+Nguyên nhân được xác định bằng thí nghiệm có đối chứng: giữ nguyên thư mục phát
+lệnh, chỉ thay đổi đúng một biến là `PYTHONPATH` của tiến trình worker — không
+đặt thì FAIL, có đặt thì PASS với đúng 9.000 bản ghi hợp lệ và 1.000 lỗi. Vậy
+nguyên nhân chắc chắn là worker không import được module, không phải do mạng,
+cache hay dữ liệu. Gốc rễ là Spark pickle hàm cấp module **theo tham chiếu**
+(tên module + qualname), nên worker bắt buộc phải import được module đó.
+
+Hệ quả cho việc triển khai:
+
+| Tình huống | Ảnh hưởng |
+|---|---|
+| `local[*]`, phát lệnh từ gốc repo | Không ảnh hưởng — đây là cấu hình demo |
+| `local[*]`, phát lệnh từ thư mục khác | Job chết; khắc phục bằng cách cho `submit_job.sh` tự `cd` về gốc repo |
+| `cluster` mode | Không né được bằng `cd` vì worker ở máy khác |
+
+Cách xử lý tiêu chuẩn theo tài liệu Spark là gửi kèm module khi submit:
+
+```bash
+spark-submit \
+  --master <master> \
+  --deploy-mode cluster \
+  --py-files src/rdd_processing.py,src/generate_logs.py \
+  src/main.py --input <duong-dan-input>
+```
+
+**Chưa kiểm chứng được cách này trên máy Windows đang dùng:** `--py-files` và
+`sc.addPyFile()` đều đi qua `FileUtil.chmod` của Hadoop, mà hàm này cần
+`winutils.exe`; thiếu `HADOOP_HOME` thì lệnh hỏng ngay ở bước đăng ký file.
+Đây là giới hạn của Windows chứ không phải của cơ chế `--py-files`. ID5 cần xác
+nhận lại khi dựng môi trường triển khai thật.
 
 ### 3.3 Deployment Command and Reproducibility
 
