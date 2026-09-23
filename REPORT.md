@@ -216,12 +216,14 @@ gồm 10.000 dòng:
 | Tổng value của `reduceByKey(country)` | 9.000 = số bản ghi hợp lệ |
 | Hợp lệ + hỏng | 9.000 + 1.000 = 10.000 = tổng số dòng đầu vào |
 
-> **Lưu ý triển khai (gửi ID5):** trên PySpark 3.5, Python worker **không** kế
-> thừa `sys.path` của Driver. Job chỉ chạy được khi lệnh được phát từ thư mục
-> gốc của repo. Khi chuyển sang `--deploy-mode cluster` hoặc bất kỳ master nào
-> không phải `local`, phải gửi kèm module bằng `--py-files` (hoặc
-> `sc.addPyFile()`), nếu không worker sẽ chết với `ModuleNotFoundError`. Điều
-> này đã được kiểm chứng bằng thực nghiệm, không phải suy đoán.
+> **Lưu ý triển khai (gửi ID5):** đo được trên PySpark 3.5 — Python worker
+> **không** kế thừa `sys.path` của Driver, nên job chỉ chạy khi lệnh được phát
+> từ thư mục gốc của repo (phát từ chỗ khác: 0/3 lần chạy thành công). Nguyên
+> nhân là Spark pickle hàm cấp module theo tham chiếu, buộc worker phải
+> `import` được module. Khi chuyển sang `--deploy-mode cluster`, không thể né
+> bằng cách đổi thư mục vì worker nằm trên máy khác; cách xử lý tiêu chuẩn
+> theo tài liệu Spark là gửi kèm module bằng `--py-files`. Chi tiết và mức độ
+> cấp thiết của từng tình huống xem `docs/2.3_deploy_mode_DRAFT.md` mục C.3.
 
 ### 2.4 Task 1 Result
 
