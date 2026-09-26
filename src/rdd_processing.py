@@ -107,6 +107,69 @@ def build_parsed_rdd(
     return parsed_rdd
 
 
+# ---------------------------------------------------------------------------
+# ID2 (Van Thu) - Task 2.4: Broadcast enrichment.
+#
+# This block is ID2's addition at the hand-off point ID1 left open:
+# parsed_rdd -> IP/country lookup -> enriched_rdd. ID1's core logic above and
+# below this block is unchanged.
+#
+# The lookup table arrives as an argument rather than being imported from
+# generate_logs.py, so the core parser never depends on the data generator.
+# The driver (main.py, owned by ID5) decides where to load the table from.
+# ---------------------------------------------------------------------------
+
+
+def build_country_broadcast(spark_context: Any, ip_country_map: Dict[str, str]):
+    """Distribute the IP-to-country lookup table to every executor once.
+
+    Returns a broadcast variable; executors read its contents through
+    ``.value``. The table is copied with ``dict()`` so that later mutation of
+    the caller's table cannot affect what was already broadcast.
+    """
+
+    return spark_context.broadcast(dict(ip_country_map))
+
+
+def _country_for_ip(ip: str, ip_country_map: Dict[str, str]) -> Optional[str]:
+    """Look up a country by the /24 prefix (first three octets) of an IPv4.
+
+    Returns ``None`` when the prefix is absent from the table; such records are
+    dropped by ``aggregate_country_access`` rather than failing the job.
+    """
+
+    prefix = ip.rsplit(".", 1)[0]
+    return ip_country_map.get(prefix)
+
+
+def _make_country_enricher(country_broadcast: Any):
+    """Build the function used inside ``.map()``, reading the table via ``.value``.
+
+    The closure holds only a reference to the broadcast object, which
+    serialises cheaply, rather than a copy of the table itself, so each task
+    avoids shipping the table again.
+    """
+
+    def _attach_country(record: Dict[str, Any]) -> Dict[str, Any]:
+        enriched = dict(record)
+        enriched["country"] = _country_for_ip(record["ip"], country_broadcast.value)
+        return enriched
+
+    return _attach_country
+
+
+def enrich_with_country(parsed_rdd: Any, country_broadcast: Any):
+    """Attach a ``country`` field to each parsed record via a broadcast variable.
+
+    The result is the ``enriched_rdd`` that :func:`aggregate_country_access`
+    expects.
+    """
+
+    return parsed_rdd.map(_make_country_enricher(country_broadcast))
+
+
+# ------------------------------ End of ID2's block -------------------------
+
 def aggregate_country_access(enriched_rdd: Any):
     """Count accesses by country with a Pair RDD and ``reduceByKey``.
 

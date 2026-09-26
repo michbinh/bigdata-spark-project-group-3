@@ -390,16 +390,22 @@ and each executor run in their own pod.
 This subsection reports figures measured on a real machine rather than theory.
 
 On PySpark 3.5 — the version pinned in `requirements.txt` (`>=3.5,<4`) — Python
-workers **do not inherit the driver's `sys.path`**. When the job is launched
-from any directory other than the repository root, the worker dies at stage 0:
-the JVM reports `Connection reset by peer`, which is in fact the worker failing
-to `import` the `rdd_processing` module while unpickling a function that
-references it.
+workers **do not inherit the driver's `sys.path`**. A worker that cannot import
+the module holding a pickled function dies at stage 0: the JVM reports
+`Connection reset by peer`, which is in fact the worker failing to `import`
+`rdd_processing` while unpickling a function that references it.
 
-| Version | Launched from repository root | Launched from elsewhere |
+Because this repository keeps its modules in `src/`, the workers' working
+directory never contains them, so the failure occurs **even when the job is
+launched from the repository root**. This was measured against the repository
+layout itself:
+
+| Module location | Launched from repository root | PySpark |
 |---|---|---|
-| PySpark 4.2.0 | 5/5 passed | 5/5 passed |
-| **PySpark 3.5.9** | **3/3 passed** | **0/3 — worker died** |
+| Repository root (earlier scaffold) | 3/3 passed | 3.5.9 |
+| **`src/` (this repository)** | **fails — worker dies** | 3.5.9 |
+| `src/`, with `src` on the worker's path | 11/11 checks passed | 3.5.9 |
+| Either location | passes | 4.2.0 |
 
 The cause was established by a controlled experiment: holding the launch
 directory fixed and varying only the worker process's `PYTHONPATH`. Without it
@@ -409,13 +415,15 @@ import, not networking, caching or the data itself. The underlying reason is
 that Spark pickles module-level functions **by reference** — module name plus
 qualified name — so the worker must be able to import that module.
 
-Consequences for deployment:
+Consequences for deployment. Note that, unlike a layout with modules at the
+repository root, the `src/` layout leaves no configuration in which this can be
+ignored:
 
 | Situation | Impact |
 |---|---|
-| `local[*]`, launched from the repository root | None — this is the demonstration configuration |
-| `local[*]`, launched from another directory | The job dies; the cheapest fix is for `submit_job.sh` to change into the repository root itself |
-| `cluster` mode | Cannot be avoided by changing directory, because the workers are on other machines |
+| `local[*]`, launched from the repository root | **Fails** — `src/` is not on the workers' path |
+| `local[*]`, with `src` exported on `PYTHONPATH` or shipped with `--py-files` | Passes |
+| `cluster` mode | Fails unless the modules are shipped; the workers are on other machines, so no local path helps |
 
 The standard remedy in the Spark documentation is to ship the modules with the
 application:
