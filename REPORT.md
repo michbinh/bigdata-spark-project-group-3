@@ -37,35 +37,36 @@ transformations vs actions, fault tolerance and RDD vs DataFrame comparison. -->
 
 ### 2.3 Broadcast Variables and Accumulators
 
-Khi Spark thực thi một transformation, hàm được truyền vào (ví dụ hàm lambda
-trong `map()`) sẽ được serialize và gửi kèm tới **từng task** trên các Executor.
-Mọi biến mà hàm đó tham chiếu cũng được sao chép theo. Hệ quả là hai vấn đề:
-biến chỉ-đọc có kích thước lớn bị gửi lặp lại rất nhiều lần, và mọi thay đổi mà
-Executor thực hiện trên bản sao đều không quay ngược về Driver.
+When Spark executes a transformation, the function passed to it (for example the
+lambda inside `map()`) is serialised and shipped to **every task** on the
+executors. Any variable the function references is copied along with it. This
+creates two problems: a large read-only variable is re-sent many times over, and
+any change an executor makes to its copy never travels back to the driver.
 
-**Shared Variables** là cơ chế Spark cung cấp để giải quyết đúng hai vấn đề
-này. Spark có hai loại, phục vụ hai chiều dữ liệu ngược nhau:
+**Shared variables** are the mechanism Spark provides for exactly these two
+problems. Spark offers two kinds, serving opposite directions of data flow:
 
-| Loại | Chiều dữ liệu | Tính chất | Dùng để |
+| Kind | Direction | Property | Purpose |
 |---|---|---|---|
-| Broadcast Variable | Driver → Executor | Chỉ đọc (read-only) | Phát tán dữ liệu tra cứu dùng chung |
-| Accumulator | Executor → Driver | Chỉ ghi thêm (add-only) | Gom số liệu thống kê trong lúc chạy |
+| Broadcast variable | Driver → Executor | Read-only | Distribute shared lookup data |
+| Accumulator | Executor → Driver | Add-only | Aggregate statistics during execution |
 
 #### 2.3.1 Broadcast Variable
 
-**Broadcast Variable** là biến chỉ đọc được Driver gửi tới mỗi Executor **đúng
-một lần** và cache lại trong bộ nhớ của Executor đó, thay vì gửi kèm theo từng
-task.
+A **broadcast variable** is a read-only value that the driver sends to each
+executor **exactly once** and that the executor then caches in memory, instead
+of shipping it with every task.
 
-Driver tạo biến bằng `sc.broadcast(value)`. Spark chia biến thành các block và
-phân phối theo cơ chế ngang hàng (peer-to-peer): Executor đã nhận được block có
-thể chuyển tiếp cho Executor khác, nên tải trên Driver không tăng tuyến tính
-theo số node. Phía Executor, code đọc dữ liệu qua thuộc tính `.value`.
+The driver creates one with `sc.broadcast(value)`. Spark splits the value into
+blocks and distributes them peer-to-peer: an executor that already holds a block
+can forward it to another executor, so the load on the driver does not grow
+linearly with the number of nodes. On the executor side, code reads the value
+through the `.value` attribute.
 
-Trong đồ án này, Broadcast được dùng cho bảng tra cứu `ip_country_map` (ánh xạ
-tiền tố IP `/24` sang tên quốc gia). Bảng này cần thiết ở mọi bản ghi trong
-bước làm giàu dữ liệu, nên nếu không broadcast thì nó sẽ bị serialize lại cho
-từng task:
+In this project, a broadcast variable carries the `ip_country_map` lookup table,
+which maps an IPv4 `/24` prefix to a country name. Every record needs this table
+during the enrichment step, so without broadcasting it would be serialised again
+for each task:
 
 ```python
 # Driver
@@ -80,41 +81,45 @@ def enrich_with_country(record):
 enriched_rdd = parsed_rdd.map(enrich_with_country)
 ```
 
-Lợi ích cụ thể: giả sử job có 200 task và bảng tra cứu nặng 10 MB. Không dùng
-Broadcast, Spark phải truyền `200 × 10 MB = 2 GB` qua mạng. Dùng Broadcast, chỉ
-truyền 10 MB tới mỗi Executor — với 10 Executor là 100 MB, giảm khoảng 20 lần.
+A concrete illustration: suppose a job has 200 tasks and the lookup table is
+10 MB. Without broadcasting, Spark transfers `200 × 10 MB = 2 GB` over the
+network. With broadcasting, it transfers 10 MB to each executor — 100 MB across
+10 executors, roughly a twenty-fold reduction.
 
-Broadcast là **bất biến**. Nếu dữ liệu nguồn thay đổi sau khi đã broadcast,
-biến đã phát tán không tự cập nhật; phải giải phóng bằng `unpersist()` hoặc
-`destroy()` rồi broadcast lại một biến mới.
+A broadcast variable is **immutable**. If the source data changes after
+broadcasting, the distributed copy does not update itself; the variable must be
+released with `unpersist()` or `destroy()` and a new one broadcast in its place.
 
-**Khi nào KHÔNG nên dùng Broadcast:**
+**When not to use a broadcast variable:**
 
-1. **Dữ liệu quá lớn so với bộ nhớ Executor.** Broadcast Variable phải nằm trọn
-   trong bộ nhớ của *mỗi* Executor. Một bảng vài GB sẽ gây `OutOfMemoryError`
-   hoặc đẩy Executor vào vòng lặp GC. Với dữ liệu lớn, nên dùng shuffle join để
-   Spark chia nhỏ theo partition.
-2. **Dữ liệu quá nhỏ.** Với một hằng số hay list vài phần tử, chi phí quản lý
-   Broadcast lớn hơn lợi ích; cứ để Spark serialize kèm closure.
-3. **Dữ liệu chỉ dùng một lần hoặc thay đổi liên tục.** Broadcast có lợi nhờ
-   được tái sử dụng nhiều lần; nếu phải `destroy()` và tạo lại liên tục thì chi
-   phí phát tán không được bù lại.
-4. **Dữ liệu cần ghi/cập nhật từ Executor.** Broadcast là read-only. Sửa
-   `.value` trên Executor chỉ sửa bản sao cục bộ. Nhu cầu này thuộc về
-   Accumulator.
+1. **The data is too large for executor memory.** A broadcast variable must fit
+   entirely in the memory of *every* executor. A table of several gigabytes will
+   trigger `OutOfMemoryError` or push executors into a garbage-collection loop.
+   For large data, a shuffle join lets Spark partition the work instead.
+2. **The data is trivially small.** For a single constant or a list of a few
+   elements, the bookkeeping cost of a broadcast variable outweighs the benefit;
+   letting Spark serialise it with the closure is enough.
+3. **The data is used once, or changes constantly.** Broadcasting pays off
+   through repeated reuse. If the value is consulted only once, or must be
+   destroyed and rebuilt every few operations, the distribution cost is never
+   recovered.
+4. **The data must be written to from executors.** Broadcast variables are
+   read-only; mutating `.value` on an executor changes only that local copy.
+   That requirement belongs to an accumulator.
 
 #### 2.3.2 Accumulator
 
-**Accumulator** là biến chỉ được cộng dồn, cho phép Executor gửi số liệu ngược
-về Driver. Driver tạo biến bằng `sc.accumulator(0)`; mỗi task giữ một bản cục
-bộ và gọi `.add()` lên bản đó; khi task **hoàn thành**, Spark gửi phần đóng góp
-cục bộ về Driver và cộng vào giá trị tổng.
+An **accumulator** is an add-only variable that lets executors send figures back
+to the driver. The driver creates one with `sc.accumulator(0)`; each task keeps a
+local copy and calls `.add()` on it; when a task **completes**, Spark sends its
+local contribution to the driver and merges it into the running total.
 
-Chỉ Driver được phép đọc `.value`. Executor đọc `.value` sẽ báo lỗi, vì tại đó
-chỉ tồn tại giá trị cục bộ của riêng task đang chạy, không phải tổng toàn cục.
+Only the driver may read `.value`. Reading `.value` on an executor raises an
+error, because at that point only the local value of the currently running task
+exists, not the global total.
 
-Trong đồ án này, Accumulator đếm số bản ghi log hỏng mà không cần duyệt dữ liệu
-thêm một lượt và không làm job dừng lại:
+In this project, an accumulator counts malformed log records without a second
+pass over the data and without stopping the job:
 
 ```python
 # Driver
@@ -129,101 +134,97 @@ def parse_with_counter(line):
 
 parsed_rdd = raw_rdd.map(parse_with_counter).filter(lambda r: r is not None)
 parsed_rdd.cache()
-parsed_rdd.count()                  # action materialize toàn bộ dữ liệu
+parsed_rdd.count()                  # action that materialises the whole dataset
 
-print(invalid_log_counter.value)    # chỉ đọc ở Driver, sau action
+print(invalid_log_counter.value)    # driver only, and only after an action
 ```
 
-Vì Spark đánh giá lười, `invalid_log_counter.value` **chỉ có ý nghĩa sau khi
-một action đã chạy**. Đọc trước action luôn trả về 0 — không phải vì không có
-bản ghi hỏng, mà vì lineage chưa hề được thực thi.
+Because Spark evaluates lazily, `invalid_log_counter.value` is **meaningful only
+after an action has run**. Reading it beforehand always returns 0 — not because
+there are no malformed records, but because the lineage has not been executed at
+all.
 
-#### 2.3.3 Giới hạn: Accumulator không bảo đảm exactly-once
+#### 2.3.3 Limitation: accumulators are not exactly-once
 
-Bảo đảm mà Spark đưa ra khác nhau tùy vị trí đặt lệnh `.add()`:
+The guarantee Spark offers depends on where `.add()` is called:
 
-| Vị trí `.add()` | Bảo đảm của Spark |
+| Location of `.add()` | Spark's guarantee |
 |---|---|
-| Trong một **action** (ví dụ `foreach`) | **Exactly-once** — Spark bỏ qua cập nhật từ task bị lặp |
-| Trong một **transformation** (ví dụ `map`) | **Không bảo đảm** — có thể đếm nhiều lần hoặc thiếu |
+| Inside an **action** (for example `foreach`) | **Exactly-once** — Spark discards updates from retried tasks |
+| Inside a **transformation** (for example `map`) | **No guarantee** — the count may be inflated or short |
 
-Với transformation, có ba tình huống làm sai số đếm:
+Within a transformation, three situations distort the count:
 
-1. **Task thất bại và chạy lại.** Nếu một task lỗi giữa chừng, Spark lên lịch
-   chạy lại partition đó; phần đã cộng của lần chạy hỏng có thể đã hoặc chưa
-   được gộp, dẫn tới đếm trùng.
-2. **Speculative execution.** Khi `spark.speculation=true`, Spark chạy song song
-   một bản sao của task chậm. Cả hai bản đều cộng vào Accumulator dù chỉ một
-   bản được dùng kết quả.
-3. **Lineage bị tính lại (phổ biến nhất).** RDD không tự lưu kết quả; nếu một
-   RDD không được cache mà bị hai action cùng dùng, Spark chạy lại toàn bộ
-   lineage cho action thứ hai, và hàm `map` chứa `.add()` chạy lại từ đầu — số
-   đếm bị nhân đôi.
+1. **A task fails and is retried.** If a task dies partway through, Spark
+   reschedules that partition. The contribution of the failed attempt may or may
+   not already have been merged, which can double-count.
+2. **Speculative execution.** With `spark.speculation=true`, Spark launches a
+   duplicate of a slow task. Both copies add to the accumulator even though only
+   one result is used.
+3. **Lineage recomputation (the most common cause).** An RDD does not retain its
+   results. If an uncached RDD feeds two actions, Spark replays the whole lineage
+   for the second one, and the `map` containing `.add()` runs again from the
+   start — doubling the count.
 
-**Cách phòng tránh trong đồ án này:** cache RDD đã parse và filter, rồi
-materialize đúng một lần bằng một action trước mọi action downstream khác:
+**The mitigation used in this project** is to cache the parsed and filtered RDD,
+then materialise it exactly once with a single action before any downstream
+action runs:
 
 ```python
-parsed_rdd.cache()     # hoặc .persist()
-parsed_rdd.count()     # materialize toàn bộ dữ liệu đúng một lần
+parsed_rdd.cache()     # or .persist()
+parsed_rdd.count()     # materialises the whole dataset exactly once
 ```
 
-Ưu tiên `count()` thay vì `collect()` (kéo toàn bộ dữ liệu về Driver, nguy cơ
-tràn bộ nhớ Driver) hoặc `take(n)` (chỉ đọc đủ `n` phần tử rồi dừng, nên các
-partition còn lại không được duyệt và Accumulator đếm thiếu).
+`count()` is preferred over `collect()`, which pulls the entire dataset to the
+driver and risks exhausting driver memory, and over `take(n)`, which reads only
+enough elements to satisfy `n` and therefore leaves the remaining partitions
+unvisited, producing an undercount.
 
-Ngay cả khi đã cache, đây vẫn chỉ là biện pháp giảm rủi ro chứ **không** biến
-Accumulator thành exactly-once: nếu một partition đã cache bị mất, Spark dựng
-lại partition đó từ lineage và số đếm vẫn sai. Vì vậy Accumulator phù hợp cho
-số liệu quan trắc/gỡ lỗi, **không** nên dùng làm nguồn chân lý cho kết quả
-nghiệp vụ. Nếu cần con số chính xác tuyệt đối, hãy đếm bằng một phép biến đổi
-xác định trên RDD đã cache — ví dụ `raw_rdd.count() - parsed_rdd.count()`.
+Even with caching, this remains risk reduction rather than a guarantee: it does
+**not** make an accumulator exactly-once. If a cached partition is lost, Spark
+rebuilds it from the lineage and the count drifts again. Accumulators are
+therefore suited to observability and debugging figures, and should **not** be
+treated as the source of truth for a business result. Where an exact number is
+required, derive it from a deterministic transformation over the cached RDD —
+for example `raw_rdd.count() - parsed_rdd.count()`.
 
-#### 2.3.4 Phân loại bản ghi log hỏng
+#### 2.3.4 Classification of malformed records
 
-Bộ sinh dữ liệu `src/generate_logs.py` tạo ra `data/raw_logs.txt` theo tỉ lệ
-90% bản ghi hợp lệ và 10% bản ghi hỏng. Phần 10% hỏng chia đều cho **4 loại
-lỗi**, và cũng chính là các trường hợp `parse_log_line()` trả về `None` để
-Accumulator đếm.
+The generator `src/generate_logs.py` produces `data/raw_logs.txt` with 90% valid
+records and 10% malformed ones. The malformed 10% is split evenly across **four
+error types**, which are precisely the cases where `parse_log_line()` returns
+`None` and the accumulator counts.
 
-Bốn loại được kiểm tra **theo đúng thứ tự ưu tiên dưới đây, dừng ở loại đầu
-tiên khớp**, nên mỗi bản ghi hỏng thuộc về đúng một loại duy nhất:
+The four types are checked **in the priority order below, stopping at the first
+match**, so every malformed record belongs to exactly one type:
 
-| # | Loại lỗi | Điều kiện | Ví dụ |
+| # | Error type | Condition | Example |
 |---|---|---|---|
-| 1 | **Thiếu trường** | Số trường tách được ít hơn schema yêu cầu | `10.10.1.7 - - [22/Sep/2026:08:15:03 +0700] "GET /cart HTTP/1.1" 200` (thiếu `bytes`) |
-| 2 | **IPv4 sai định dạng** | Đủ trường, nhưng trường IP không khớp định dạng IPv4 | `999.12.44 - - [...] "GET / HTTP/1.1" 200 1234` |
-| 3 | **Status code không phải số** | Đủ trường, IP hợp lệ, status không parse được thành số nguyên | `10.20.1.9 - - [...] "GET / HTTP/1.1" OK 1234` |
-| 4 | **Request malformed** | Đủ trường, IP hợp lệ, status hợp lệ, nhưng method/endpoint sai cấu trúc | `10.30.1.4 - - [...] "GET-only" 200 1234` |
+| 1 | **Missing field** | Fewer fields parsed than the schema requires | `10.10.1.7 - - [22/Sep/2026:08:15:03 +0700] "GET /cart HTTP/1.1" 200` (no `bytes`) |
+| 2 | **Malformed IPv4** | All fields present, but the IP field is not valid IPv4 | `999.12.44 - - [...] "GET / HTTP/1.1" 200 1234` |
+| 3 | **Non-numeric status code** | All fields present, IP valid, status does not parse as an integer | `10.20.1.9 - - [...] "GET / HTTP/1.1" OK 1234` |
+| 4 | **Malformed request** | All fields present, IP and status valid, but the method, endpoint or HTTP version is structurally wrong | `10.30.1.4 - - [...] "GET-only" 200 1234` |
 
-Thứ tự ưu tiên là bắt buộc vì một bản ghi có thể vi phạm nhiều điều kiện cùng
-lúc. Ví dụ dòng vừa thiếu trường `bytes` vừa có IP sai sẽ được xếp vào loại 1,
-không phải loại 2 — vì khi chưa tách đủ trường thì chưa thể kết luận gì về nội
-dung từng trường. Nhờ quy tắc này, tổng số bản ghi của 4 loại luôn đúng bằng
-tổng số bản ghi hỏng, không có bản ghi nào bị đếm hai lần.
+The priority order is essential because one record can violate several
+conditions at once. A line that both omits the `bytes` field and carries a bad
+IP is classified as type 1, not type 2 — until the fields have been separated,
+nothing can be concluded about the contents of any individual field. Because of
+this rule, the four type counts always sum to exactly the number of malformed
+records, with no record counted twice.
 
-#### 2.3.5 Kết quả kiểm chứng
+#### 2.3.5 Verification results
 
-Chạy trên PySpark 3.5.9 (`local[*]`, OpenJDK 17) với `data/raw_logs.txt`
-gồm 10.000 dòng:
+Executed on PySpark 3.5.9 (`local[*]`, OpenJDK 17) against a 10,000-line
+`data/raw_logs.txt`:
 
-| Hạng mục | Kết quả |
+| Measure | Result |
 |---|---|
-| Bản ghi hợp lệ | 9.000 (90,00%) |
-| `invalid_log_counter.value` | 1.000 (10,00%) |
-| Số đếm sau 3 action downstream nữa | vẫn 1.000 — không đếm trùng |
-| Bản ghi được Broadcast phân giải ra quốc gia | 9.000/9.000, đủ 14 quốc gia |
-| Tổng value của `reduceByKey(country)` | 9.000 = số bản ghi hợp lệ |
-| Hợp lệ + hỏng | 9.000 + 1.000 = 10.000 = tổng số dòng đầu vào |
-
-> **Lưu ý triển khai (gửi ID5):** đo được trên PySpark 3.5 — Python worker
-> **không** kế thừa `sys.path` của Driver, nên job chỉ chạy khi lệnh được phát
-> từ thư mục gốc của repo (phát từ chỗ khác: 0/3 lần chạy thành công). Nguyên
-> nhân là Spark pickle hàm cấp module theo tham chiếu, buộc worker phải
-> `import` được module. Khi chuyển sang `--deploy-mode cluster`, không thể né
-> bằng cách đổi thư mục vì worker nằm trên máy khác; cách xử lý tiêu chuẩn
-> theo tài liệu Spark là gửi kèm module bằng `--py-files`. Chi tiết và mức độ
-> cấp thiết của từng tình huống xem `docs/2.3_deploy_mode_DRAFT.md` mục C.3.
+| Valid records | 9,000 (90.00%) |
+| `invalid_log_counter.value` | 1,000 (10.00%) |
+| Count after three further downstream actions | still 1,000 — no double counting |
+| Records resolved to a country by the broadcast lookup | 9,000 of 9,000, across 14 countries |
+| Sum of values from `reduceByKey(country)` | 9,000 = the number of valid records |
+| Valid plus malformed | 9,000 + 1,000 = 10,000 = total input lines |
 
 ### 2.4 Task 1 Result
 
@@ -237,184 +238,202 @@ gồm 10.000 dòng:
 
 ### 3.2 spark-submit and Deploy Modes
 
-#### 3.2.1 Deploy mode quyết định điều gì
+#### 3.2.1 What deploy mode decides
 
-Một ứng dụng Spark luôn gồm hai loại tiến trình. **Driver** chạy hàm `main()`,
-dựng `SparkContext`, phân tích lineage, chia job thành stage/task và nhận kết
-quả trả về. **Executor** là tiến trình worker thực thi task và giữ dữ liệu đã
-cache.
+A Spark application always comprises two kinds of process. The **driver** runs
+`main()`, builds the `SparkContext`, analyses the lineage, splits the job into
+stages and tasks, and receives the results. The **executors** are the worker
+processes that run those tasks and hold cached data.
 
-Executor **luôn** chạy trên các node của cluster. Điều duy nhất mà
-`--deploy-mode` quyết định là: **Driver chạy ở đâu.**
+Executors **always** run on cluster nodes. The only thing `--deploy-mode`
+decides is: **where the driver runs.**
 
 ```text
 client mode                              cluster mode
 -----------------------------------      -----------------------------------
-[Máy submit]                             [Máy submit]
-  └── Driver  ◄──── kết quả ────┐          └── spark-submit (thoát sau khi gửi)
+[Submit machine]                         [Submit machine]
+  └── Driver  ◄──── results ────┐          └── spark-submit (exits after submit)
         │                       │                     │
         ▼                       │                     ▼
 [Cluster]                       │        [Cluster]
-  Executor 1 ───────────────────┤          Driver  ◄── nằm TRONG cluster
+  Executor 1 ───────────────────┤          Driver  ◄── runs INSIDE the cluster
   Executor 2 ───────────────────┤            ├── Executor 1
   Executor 3 ───────────────────┘            ├── Executor 2
                                              └── Executor 3
 ```
 
-> `--deploy-mode` **không** liên quan tới `--master local[*]`. Ở chế độ `local`
-> không có cluster nào cả — Driver và Executor cùng nằm trong một JVM trên một
-> máy, và `--deploy-mode` bị bỏ qua.
+> `--deploy-mode` is unrelated to `--master local[*]`. In `local` mode there is
+> no cluster at all — the driver and executors share a single JVM on one
+> machine — and `--deploy-mode` is ignored.
 
 #### 3.2.2 `--deploy-mode client`
 
-Driver chạy ngay trên máy gõ lệnh `spark-submit`; máy submit trở thành một
-thành phần đang chạy của ứng dụng.
+The driver runs on the machine that issued `spark-submit`, which makes that
+machine a live component of the application.
 
-- Log của Driver, `print()` và stack trace hiện thẳng ra terminal; kết quả của
-  `collect()`, `take()`, `show()` hiển thị trực tiếp.
-- Toàn bộ lưu lượng điều phối đi qua đường mạng giữa máy submit và cluster.
-- **Tắt terminal hoặc mất mạng thì ứng dụng chết** — Driver không còn thì
-  Executor cũng bị thu hồi.
-- Máy submit phải cho phép Executor kết nối ngược về Driver; thường không khả
-  thi nếu máy submit nằm sau NAT/VPN hoặc firewall chặn inbound.
-- Driver dùng CPU/RAM của máy cá nhân, nên `collect()` trên tập lớn gây OOM ở
-  chính laptop chứ không phải ở cluster.
+- Driver logs, `print()` output and stack traces appear directly in the
+  terminal; results of `collect()`, `take()` and `show()` are displayed
+  immediately.
+- All scheduling traffic crosses the network between the submit machine and the
+  cluster.
+- **Closing the terminal or losing the network kills the application** — once
+  the driver is gone, the executors are reclaimed.
+- The submit machine must accept inbound connections from the executors back to
+  the driver, which is often impossible behind NAT, a VPN or a firewall.
+- The driver consumes local CPU and memory, so `collect()` on a large dataset
+  exhausts the laptop's memory rather than the cluster's.
 
-**Dùng khi:** phát triển, gỡ lỗi, demo, và notebook tương tác (`spark-shell`,
-`pyspark`, Jupyter — các công cụ này *chỉ* chạy được ở client mode vì cần vòng
-lặp REPL).
+**Use for:** development, debugging, demonstrations, and interactive notebooks
+(`spark-shell`, `pyspark`, Jupyter — these tools run *only* in client mode
+because they require an interactive REPL loop).
 
 #### 3.2.3 `--deploy-mode cluster`
 
-Cluster Manager cấp phát một container/node trong cluster để chạy Driver;
-`spark-submit` chỉ gửi đơn rồi thoát.
+The cluster manager allocates a container or node inside the cluster to host the
+driver; `spark-submit` merely submits the application and exits.
 
-- Máy submit có thể tắt ngay sau khi submit, job vẫn chạy tiếp.
-- Driver cùng mạng nội bộ với Executor nên độ trễ điều phối thấp hơn nhiều.
-- Driver dùng tài nguyên cluster, khai báo qua `--driver-memory` /
+- The submit machine can be shut down immediately afterwards and the job
+  continues.
+- The driver shares the cluster's internal network with the executors, so
+  scheduling latency is far lower.
+- The driver consumes cluster resources, declared with `--driver-memory` and
   `--driver-cores`.
-- **Không thấy log trực tiếp** — phải lấy qua Spark History Server,
-  `yarn logs -applicationId <id>` hoặc `kubectl logs`.
-- Cluster Manager có thể tự khởi động lại Driver khi nó chết (`--supervise` ở
-  Standalone, `spark.yarn.maxAppAttempts` ở YARN).
-- File phụ thuộc phải nằm ở nơi cluster truy cập được (HDFS, S3) hoặc được gửi
-  kèm — **không** thể trỏ tới đường dẫn cục bộ trên máy submit.
+- **Logs are not visible directly** — they must be retrieved through the Spark
+  History Server, `yarn logs -applicationId <id>` or `kubectl logs`.
+- The cluster manager can restart the driver automatically when it dies
+  (`--supervise` on Standalone, `spark.yarn.maxAppAttempts` on YARN).
+- Dependencies must live somewhere the cluster can reach (HDFS, S3) or be
+  shipped with the job; they **cannot** be referenced by a local path on the
+  submit machine.
 
-**Dùng khi:** chạy chính thức, job dài, job theo lịch, job submit từ CI/CD.
+**Use for:** production runs, long-running jobs, scheduled jobs and jobs
+submitted from CI/CD.
 
-#### 3.2.4 So sánh client và cluster
+#### 3.2.4 Comparison of client and cluster mode
 
-| Tiêu chí | `client` | `cluster` |
+| Criterion | `client` | `cluster` |
 |---|---|---|
-| Vị trí Driver | Máy submit | Node trong cluster |
-| Vị trí Executor | Trong cluster | Trong cluster |
-| Xem log Driver | Trực tiếp trên terminal | History Server / `yarn logs` / `kubectl logs` |
-| Tắt máy submit | Ứng dụng chết | Ứng dụng vẫn chạy |
-| Độ trễ mạng điều phối | Cao (qua WAN/VPN) | Thấp (trong cùng cluster) |
-| Tài nguyên Driver | CPU/RAM máy cá nhân | Tài nguyên cluster |
-| Tự khởi động lại Driver | Không | Có (nếu bật) |
-| Yêu cầu mạng | Executor phải kết nối ngược về máy submit | Không cần |
-| Vị trí file phụ thuộc | Đường dẫn cục bộ dùng được | Phải ở nơi chia sẻ được (HDFS/S3) |
-| Shell tương tác | Có | Không |
-| Trường hợp dùng | Dev, debug, demo | Chạy chính thức, job theo lịch |
+| Driver location | Submit machine | Node inside the cluster |
+| Executor location | Inside the cluster | Inside the cluster |
+| Viewing driver logs | Directly in the terminal | History Server / `yarn logs` / `kubectl logs` |
+| Shutting down the submit machine | Application dies | Application keeps running |
+| Scheduling latency | High (across WAN/VPN) | Low (within the cluster) |
+| Driver resources | Local CPU and memory | Cluster resources |
+| Automatic driver restart | No | Yes, if enabled |
+| Network requirement | Executors must reach the submit machine | None |
+| Dependency location | Local paths work | Must be on shared storage (HDFS/S3) |
+| Interactive shell | Supported | Not supported |
+| Typical use | Development, debugging, demos | Production, scheduled jobs |
 
-#### 3.2.5 Ba Cluster Manager
+#### 3.2.5 The three cluster managers
 
-**Cluster Manager** là thành phần cấp phát tài nguyên (CPU, RAM, container).
-Nó trả lời câu hỏi *lấy máy ở đâu để chạy Driver và Executor* — tách biệt với
-câu hỏi *Driver chạy ở đâu* của deploy mode.
+A **cluster manager** allocates resources — CPU, memory, containers — to a Spark
+application. It answers *where the machines come from* to run the driver and
+executors, which is a separate question from *where the driver runs*, decided by
+the deploy mode.
 
-> Mesos từng là Cluster Manager thứ tư nhưng đã bị deprecated từ Spark 3.2 và
-> gỡ bỏ ở Spark 4.0, nên không trình bày ở đây.
+> Mesos was formerly a fourth cluster manager but was deprecated in Spark 3.2
+> and removed in Spark 4.0, so it is not covered here.
 
-**Standalone** — đi kèm sẵn trong bản phân phối Spark, gồm tiến trình Master và
-các tiến trình Worker; không cần cài gì ngoài Spark và JVM.
+**Standalone** ships with the Spark distribution itself and consists of a master
+process and worker processes. Nothing beyond Spark and a JVM is required.
 `--master spark://<master-host>:7077`
 
-- *Ưu:* cài đặt đơn giản nhất, gọn nhẹ, phù hợp cluster chỉ chạy Spark.
-- *Nhược:* chỉ chạy được Spark, không chia sẻ tài nguyên với Hive/Flink/
-  MapReduce; hàng đợi và phân quyền sơ khai (mặc định FIFO); Master là điểm
-  chết đơn lẻ nếu không cấu hình HA bằng ZooKeeper.
+- *Strengths:* the simplest to set up, lightweight, few moving parts. Well
+  suited to a cluster dedicated to Spark.
+- *Weaknesses:* runs Spark only, so resources cannot be shared with Hive, Flink
+  or MapReduce; queueing and access control are rudimentary (FIFO by default);
+  the master is a single point of failure unless configured for high
+  availability with ZooKeeper.
 
-**YARN** — bộ quản lý tài nguyên của hệ sinh thái Hadoop. Spark chạy như một
-ứng dụng YARN, trong đó ApplicationMaster đàm phán container với
-ResourceManager. `--master yarn`
+**YARN** is the resource manager of the Hadoop ecosystem. Spark runs as an
+ordinary YARN application in which an ApplicationMaster negotiates containers
+with the ResourceManager. `--master yarn`
 
-- *Ưu:* chín muồi trong doanh nghiệp; chia sẻ cluster giữa nhiều framework; có
-  hàng đợi phân cấp, quota và ưu tiên (Capacity/Fair Scheduler); tích hợp sẵn
-  Kerberos; tận dụng được data locality với HDFS.
-- *Nhược:* phải vận hành cả cụm Hadoop; cấu hình phức tạp; container dùng chung
-  thư viện ở tầng host nên khó cô lập phụ thuộc giữa các job.
-- Ở `cluster` mode Driver chạy *bên trong* ApplicationMaster; ở `client` mode
-  ApplicationMaster chỉ xin container còn Driver ở máy submit.
+- *Strengths:* mature in enterprise environments; shares one cluster across
+  several frameworks; offers hierarchical queues, quotas and priorities through
+  the Capacity and Fair schedulers; integrates with Kerberos; exploits data
+  locality with HDFS.
+- *Weaknesses:* requires operating a full Hadoop cluster; configuration is
+  involved; containers share host-level libraries, making dependency isolation
+  between jobs difficult.
+- In `cluster` mode the driver runs *inside* the ApplicationMaster. In `client`
+  mode the ApplicationMaster only requests containers while the driver stays on
+  the submit machine.
 
-**Kubernetes** — từ Spark 3.1 đã generally available. Driver và mỗi Executor
-chạy trong một Pod riêng.
+**Kubernetes** support has been generally available since Spark 3.1. The driver
+and each executor run in their own pod.
 `--master k8s://https://<api-server>:<port>`
 
-- *Ưu:* cô lập phụ thuộc triệt để nhờ container image riêng cho từng job; hợp
-  hạ tầng cloud-native và CI/CD; dùng chung cluster với các workload khác.
-- *Nhược:* cần biết vận hành Kubernetes; thời gian khởi động Pod làm tăng độ
-  trễ với job ngắn; shuffle service và lưu trữ tạm phải cấu hình thêm.
-- Chủ yếu dùng `cluster` mode; `client` mode yêu cầu Driver nằm trong Pod có
-  địa chỉ mà Executor gọi ngược về được.
+- *Strengths:* thorough dependency isolation, since each job carries its own
+  container image; fits cloud-native infrastructure and CI/CD; shares a cluster
+  with other kinds of workload.
+- *Weaknesses:* requires Kubernetes operational knowledge; pod start-up time
+  adds latency to short jobs; the shuffle service and temporary storage need
+  additional configuration.
+- Primarily used in `cluster` mode; `client` mode requires the driver to sit in
+  a pod with an address the executors can call back to.
 
-| Tiêu chí | Standalone | YARN | Kubernetes |
+| Criterion | Standalone | YARN | Kubernetes |
 |---|---|---|---|
-| Cần cài thêm | Không (kèm Spark) | Cụm Hadoop | Cụm Kubernetes |
-| Chia sẻ với framework khác | Không | Có | Có |
-| Cô lập phụ thuộc | Yếu | Trung bình | Mạnh (container image) |
-| Hàng đợi / quota | Sơ khai (FIFO) | Mạnh (Capacity/Fair) | Qua namespace + quota |
-| Bảo mật / xác thực | Cơ bản | Kerberos | RBAC + Secret |
-| Độ phức tạp vận hành | Thấp | Cao | Cao |
-| Data locality với HDFS | Nếu cùng node | Tốt nhất | Yếu (lưu trữ tách rời) |
-| Deploy mode hỗ trợ | client + cluster | client + cluster | chủ yếu cluster |
+| Additional installation | None (ships with Spark) | Hadoop cluster | Kubernetes cluster |
+| Shared with other frameworks | No | Yes | Yes |
+| Dependency isolation | Weak | Moderate | Strong (container image) |
+| Queues and quotas | Rudimentary (FIFO) | Strong (Capacity/Fair) | Namespaces and quotas |
+| Security and authentication | Basic | Kerberos | RBAC and secrets |
+| Operational complexity | Low | High | High |
+| HDFS data locality | Only if co-located | Best | Weak (storage is separate) |
+| Deploy modes supported | client and cluster | client and cluster | mainly cluster |
 
-#### 3.2.6 Ràng buộc đo được: Python worker không kế thừa `sys.path`
+#### 3.2.6 Measured constraint: Python workers do not inherit `sys.path`
 
-Phần này là **số liệu đo trên máy thật**, không phải lý thuyết.
+This subsection reports figures measured on a real machine rather than theory.
 
-Trên PySpark 3.5 — đúng phiên bản `requirements.txt` đang pin (`>=3.5,<4`) —
-Python worker **không kế thừa `sys.path` của Driver**. Nếu phát lệnh từ thư mục
-khác gốc repo, worker chết ngay ở stage 0: phía JVM báo `Connection reset by
-peer`, thực chất là worker không `import` được module `rdd_processing` khi
-unpickle hàm tham chiếu tới nó.
+On PySpark 3.5 — the version pinned in `requirements.txt` (`>=3.5,<4`) — Python
+workers **do not inherit the driver's `sys.path`**. When the job is launched
+from any directory other than the repository root, the worker dies at stage 0:
+the JVM reports `Connection reset by peer`, which is in fact the worker failing
+to `import` the `rdd_processing` module while unpickling a function that
+references it.
 
-| Phiên bản | Chạy từ gốc repo | Chạy từ thư mục khác |
+| Version | Launched from repository root | Launched from elsewhere |
 |---|---|---|
-| PySpark 4.2.0 | 5/5 PASS | 5/5 PASS |
-| **PySpark 3.5.9** | **3/3 PASS** | **0/3 — worker chết** |
+| PySpark 4.2.0 | 5/5 passed | 5/5 passed |
+| **PySpark 3.5.9** | **3/3 passed** | **0/3 — worker died** |
 
-Nguyên nhân được xác định bằng thí nghiệm có đối chứng: giữ nguyên thư mục phát
-lệnh, chỉ thay đổi đúng một biến là `PYTHONPATH` của tiến trình worker — không
-đặt thì FAIL, có đặt thì PASS với đúng 9.000 bản ghi hợp lệ và 1.000 lỗi. Vậy
-nguyên nhân chắc chắn là worker không import được module, không phải do mạng,
-cache hay dữ liệu. Gốc rễ là Spark pickle hàm cấp module **theo tham chiếu**
-(tên module + qualname), nên worker bắt buộc phải import được module đó.
+The cause was established by a controlled experiment: holding the launch
+directory fixed and varying only the worker process's `PYTHONPATH`. Without it
+the run failed; with it the run passed, reporting exactly 9,000 valid records
+and 1,000 malformed ones. The cause is therefore conclusively the failed module
+import, not networking, caching or the data itself. The underlying reason is
+that Spark pickles module-level functions **by reference** — module name plus
+qualified name — so the worker must be able to import that module.
 
-Hệ quả cho việc triển khai:
+Consequences for deployment:
 
-| Tình huống | Ảnh hưởng |
+| Situation | Impact |
 |---|---|
-| `local[*]`, phát lệnh từ gốc repo | Không ảnh hưởng — đây là cấu hình demo |
-| `local[*]`, phát lệnh từ thư mục khác | Job chết; khắc phục bằng cách cho `submit_job.sh` tự `cd` về gốc repo |
-| `cluster` mode | Không né được bằng `cd` vì worker ở máy khác |
+| `local[*]`, launched from the repository root | None — this is the demonstration configuration |
+| `local[*]`, launched from another directory | The job dies; the cheapest fix is for `submit_job.sh` to change into the repository root itself |
+| `cluster` mode | Cannot be avoided by changing directory, because the workers are on other machines |
 
-Cách xử lý tiêu chuẩn theo tài liệu Spark là gửi kèm module khi submit:
+The standard remedy in the Spark documentation is to ship the modules with the
+application:
 
 ```bash
 spark-submit \
   --master <master> \
   --deploy-mode cluster \
   --py-files src/rdd_processing.py,src/generate_logs.py \
-  src/main.py --input <duong-dan-input>
+  src/main.py --input <input-path>
 ```
 
-**Chưa kiểm chứng được cách này trên máy Windows đang dùng:** `--py-files` và
-`sc.addPyFile()` đều đi qua `FileUtil.chmod` của Hadoop, mà hàm này cần
-`winutils.exe`; thiếu `HADOOP_HOME` thì lệnh hỏng ngay ở bước đăng ký file.
-Đây là giới hạn của Windows chứ không phải của cơ chế `--py-files`. ID5 cần xác
-nhận lại khi dựng môi trường triển khai thật.
+**This remedy could not be verified on the Windows machine used here.** Both
+`--py-files` and `sc.addPyFile()` route through Hadoop's `FileUtil.chmod`, which
+requires `winutils.exe`; without `HADOOP_HOME` the call fails while registering
+the file, before the job starts. This is a limitation of Windows rather than of
+the `--py-files` mechanism, and should be confirmed on the real deployment
+environment.
 
 ### 3.3 Deployment Command and Reproducibility
 
