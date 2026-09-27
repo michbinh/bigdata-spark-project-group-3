@@ -28,12 +28,134 @@
 
 ### 2.1 RDD Fundamentals
 
-<!-- Owner: ID1. RDD definition, immutability, lineage, lazy evaluation,
-transformations vs actions, fault tolerance and RDD vs DataFrame comparison. -->
+A **Resilient Distributed Dataset (RDD)** is Spark's low-level abstraction for
+a collection of records distributed across partitions and processed in parallel.
+RDDs are immutable: an operation does not update an existing RDD, but creates a
+new one. They are also resilient because Spark records how each RDD depends on
+its predecessors. This dependency history, or **lineage**, allows Spark to
+recompute a lost partition from its source and the required transformations
+without maintaining a full replica of every intermediate dataset.
+
+RDD transformations are evaluated lazily. Calls such as `flatMap()`, `map()`,
+`filter()`, and `reduceByKey()` first extend the lineage and the associated
+directed acyclic graph (DAG); computation begins only when an action requires a
+result. In Task 1, `reduceByKey()` is also a transformation, but it introduces a
+shuffle boundary because values with the same key may reside in different
+partitions. The relevant actions are `count()` and `takeOrdered(10)`. In
+particular, `count()` materialises the cached parsed RDD so that every partition
+is evaluated before the malformed-record accumulator is inspected. This makes
+the accumulator useful for validation while avoiding normal downstream lineage
+re-evaluation; the detailed accumulator limitations are discussed in Section
+2.3.
+
+Lineage is the basis of RDD fault tolerance. If an executor loses a partition,
+Spark can reconstruct only the missing data by replaying its dependencies.
+Caching or persistence can reduce the cost of repeated computation, but it does
+not replace lineage: a lost cached partition is still recovered from the
+recorded transformations.
+
+| Criterion | RDD | DataFrame |
+|---|---|---|
+| Data model | Distributed collection of records without a required schema | Tabular data with named columns and a schema |
+| Abstraction level | Low-level record and partition API | High-level relational API |
+| Optimisation | Limited automatic optimisation because record semantics are opaque to Spark | Logical and physical plans are optimised by Spark's query engine |
+| Control | Fine-grained control over custom transformations and partition-level processing | Declarative control through column expressions, SQL, joins, and aggregations |
+| Typical use cases | Unstructured input, custom parsers, and low-level algorithms | Structured ETL, analytical queries, and schema-based processing |
+
+Task 1 deliberately uses RDDs because `data/raw_logs.txt` contains raw web
+access-log text that requires custom parsing, and the assignment explicitly
+requires Spark's Low-Level API. A DataFrame is introduced only after the RDD
+pipeline has produced the small, structured Top 10 result.
 
 ### 2.2 Core RDD Pipeline
 
-<!-- Owner: ID1. textFile -> parse -> filter -> Pair RDD -> reduceByKey -> Top 10. -->
+Task 1 processes `data/raw_logs.txt`, a generated Common/Combined Log Format
+dataset containing 10,000 records: 9,000 valid records and 1,000 malformed
+records. Its conceptual flow is:
+
+`raw_logs.txt` -> `SparkContext.textFile()` -> `flatMap()` ->
+`map(parse_log_line)` -> `filter(valid records)` -> Pair RDD ->
+`reduceByKey()` -> Top 10.
+
+`SparkContext.textFile()` loads the file as an RDD whose elements are raw text
+records. `flatMap(_expand_text_record)` then normalises each raw record into one
+or more logical lines before parsing; for the generated one-record-per-line
+input, it preserves one logical line per record. The following `map()` invokes
+`parse_log_line` through `_parse_with_counter`. The parser validates the IPv4
+address, timestamp and request layout, numeric HTTP status in the valid range,
+and the request method, endpoint, and HTTP version. A valid line becomes a
+`LogRecord` dictionary with `ip`, `timestamp`, `method`, `endpoint`, and
+`status_code`; malformed input becomes `None`. The subsequent `filter()` removes
+these `None` values, leaving only parsed records.
+
+After the downstream country-enrichment handoff described in Section 2.3, each
+enriched record is mapped to the Pair RDD entry `(country, 1)`. This is the
+integration point for the shared-variable step rather than an implementation of
+that step in the ID1.3 pipeline. `reduceByKey(add)` combines entries with the
+same country into `(country, access_count)`. Equal keys must be grouped across
+partitions, so this transformation causes a shuffle; its map-side local
+combining reduces the amount of data transferred over the network.
+
+Finally, `takeOrdered(10, key=lambda item: (-item[1], item[0]))` returns the ten
+countries with the highest access counts, using country name as a deterministic
+tie-breaker. Only this small result is parallelised and converted to a DataFrame
+with the columns `country` and `access_count`.
+
+```mermaid
+flowchart TD
+    A[raw_logs.txt] -->|SparkContext.textFile| B[Raw Lines RDD]
+    B -->|flatMap| C[Logical Lines RDD]
+    C -->|map parse_log_line| D[Parsed/None RDD]
+    D -->|filter valid records| E[Parsed Records RDD]
+    E -->|country-enrichment handoff| F[Enriched Records RDD]
+    F -->|map to country, 1| G["Pair RDD (country, 1)"]
+    G -->|reduceByKey| H[Country Counts RDD]
+    H -->|takeOrdered 10| I[Top 10 Result]
+    I -->|parallelize and toDF| J[Top 10 DataFrame]
+```
+
+**Figure 1. RDD lineage for the Task 1 log-processing pipeline.**
+
+The following concise excerpt from `src/rdd_processing.py` shows the core
+operations across the parsing, aggregation, and result-conversion functions:
+
+```python
+def build_parsed_rdd(
+    spark_context: Any,
+    input_path: str,
+    invalid_log_counter: Any = None,
+    cache_result: bool = False,
+):
+    raw_rdd = spark_context.textFile(input_path)
+    logical_lines_rdd = raw_rdd.flatMap(_expand_text_record)
+    parsed_or_none_rdd = logical_lines_rdd.map(
+        lambda line: _parse_with_counter(line, invalid_log_counter)
+    )
+    parsed_rdd = parsed_or_none_rdd.filter(lambda record: record is not None)
+
+    if cache_result:
+        parsed_rdd.cache()
+        parsed_rdd.count()
+
+    return parsed_rdd
+
+
+def aggregate_country_access(enriched_rdd: Any):
+    country_pairs = enriched_rdd.map(lambda record: (record["country"], 1))
+    return country_pairs.reduceByKey(add)
+
+
+def to_top10_dataframe(country_counts_rdd: Any, spark: Any):
+    top_ten = country_counts_rdd.takeOrdered(
+        10, key=lambda item: (-item[1], item[0])
+    )
+    if not top_ten:
+        return spark.createDataFrame([], "country string, access_count long")
+
+    return spark.sparkContext.parallelize(top_ten).toDF(
+        ["country", "access_count"]
+    )
+```
 
 ### 2.3 Broadcast Variables and Accumulators
 
