@@ -378,7 +378,7 @@ aggregated counts preserved all 9,000 valid records.
 | Distinct countries | 14 |
 | Aggregated access count | 9,000 |
 | Top 10 rows | 10 |
-| Unit tests | 5/5 PASS |
+| Unit tests | 15/15 PASS |
 | Accumulator stability | YES |
 
 #### Top 10 Countries by Access Count
