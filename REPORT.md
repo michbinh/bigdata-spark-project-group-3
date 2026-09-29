@@ -350,7 +350,56 @@ Executed on PySpark 3.5.9 (`local[*]`, OpenJDK 17) against a 10,000-line
 
 ### 2.4 Task 1 Result
 
-<!-- Insert final Top 10 Countries result, invalid-record count and screenshot. -->
+The Task 1 pipeline was validated end to end against the 10,000-record
+synthetic access-log dataset. The validation covered log parsing, malformed-row
+filtering, Broadcast IP-to-Country enrichment, Pair RDD aggregation,
+`takeOrdered(10)`, and the final DataFrame conversion.
+
+Parsing produced 9,000 valid records and safely rejected 1,000 malformed
+records without terminating the Spark job. After materialization,
+`invalid_log_counter` reported 1,000 and remained stable across repeated actions
+on the cached parsed RDD.
+
+The Broadcast map enriched all 9,000 valid records, leaving no record without a
+country. This map-side lookup did not require a distributed join. The enriched
+records were then mapped to `(country, 1)` pairs and aggregated with
+`reduceByKey()` into `(country, access_count)` results for 14 countries. The
+aggregated counts preserved all 9,000 valid records.
+
+#### Validation Summary
+
+| Metric | Result |
+|---|---:|
+| Total input records | 10,000 |
+| Valid parsed records | 9,000 |
+| Malformed records | 1,000 |
+| Enriched records | 9,000 |
+| Records without country | 0 |
+| Distinct countries | 14 |
+| Aggregated access count | 9,000 |
+| Top 10 rows | 10 |
+| Unit tests | 15/15 PASS |
+| Accumulator stability | YES |
+
+#### Top 10 Countries by Access Count
+
+| Rank | Country | Access Count |
+|------|---------|-------------:|
+| 1 | Vietnam | 1967 |
+| 2 | United States | 1676 |
+| 3 | Japan | 1059 |
+| 4 | Singapore | 780 |
+| 5 | Germany | 617 |
+| 6 | India | 575 |
+| 7 | South Korea | 505 |
+| 8 | Brazil | 428 |
+| 9 | Australia | 357 |
+| 10 | France | 322 |
+
+Broadcast enrichment and the Pair RDD `reduceByKey()` aggregation operated
+correctly and preserved all 9,000 valid records. The final Top 10 result was
+converted to a DataFrame with the `country` and `access_count` columns. Task 1
+end-to-end validation: **PASS**.
 
 ## 3. Spark Architecture and Deployment
 

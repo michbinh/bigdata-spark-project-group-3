@@ -9,11 +9,20 @@ from __future__ import annotations
 import ipaddress
 import re
 from operator import add
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Iterable, Optional, TypedDict
 
 
-# Provisional Common/Combined Log Format pattern. Keep this in one place so it
-# can be adjusted when the final generator output from ID2 is available.
+class LogRecord(TypedDict):
+    """Fields extracted from one valid access-log line."""
+
+    ip: str
+    timestamp: str
+    method: str
+    endpoint: str
+    status_code: int
+
+
+# Common/Combined Log Format pattern shared with the ID2 log contract.
 LOG_PATTERN = re.compile(
     r'^(?P<ip>\S+)\s+\S+\s+\S+\s+'
     r'\[(?P<timestamp>[^\]]+)\]\s+'
@@ -28,7 +37,7 @@ REQUEST_PATTERN = re.compile(
 )
 
 
-def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
+def parse_log_line(line: str) -> Optional[LogRecord]:
     """Parse one Common/Combined Log Format line.
 
     Return ``None`` for malformed input so bad records can be filtered without
@@ -71,7 +80,9 @@ def _expand_text_record(raw_record: str) -> Iterable[str]:
     return lines if lines else (raw_record,)
 
 
-def _parse_with_counter(line: str, invalid_log_counter: Any = None):
+def _parse_with_counter(
+    line: str, invalid_log_counter: Any = None
+) -> Optional[LogRecord]:
     record = parse_log_line(line)
     if record is None and invalid_log_counter is not None:
         invalid_log_counter.add(1)
