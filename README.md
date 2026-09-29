@@ -70,7 +70,7 @@ fix(deployment): use relative input path
 
 1. **ID2** tạo và commit `src/generate_logs.py` cùng `data/raw_logs.txt` (90% valid, 10% malformed).
 2. ID2 ghi rõ format mỗi dòng log và các loại lỗi được tạo.
-3. **ID1** parse ra schema thống nhất: `ip`, `timestamp`, `method`, `endpoint`, `status`.
+3. **ID1** parse ra schema thống nhất: `ip`, `timestamp`, `method`, `endpoint`, `status_code`.
 4. ID1 + ID2 chỉ ghép Broadcast/Accumulator sau khi thống nhất schema.
 5. Output Task 1 cuối cùng phải in được: **Top 10 Countries** và **invalid log count**.
 
