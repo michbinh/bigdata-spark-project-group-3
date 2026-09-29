@@ -188,7 +188,10 @@ def aggregate_country_access(enriched_rdd: Any):
     must contain parsed dictionaries with a non-empty ``country`` field.
     """
 
-    country_pairs = enriched_rdd.map(lambda record: (record["country"], 1))
+    records_with_country = enriched_rdd.filter(
+        lambda record: bool(record.get("country"))
+    )
+    country_pairs = records_with_country.map(lambda record: (record["country"], 1))
     return country_pairs.reduceByKey(add)
 
 
