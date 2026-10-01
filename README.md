@@ -23,7 +23,8 @@ Tạo log mẫu → xử lý log bằng RDD → Top 10 Countries
 │   ├── main.py                  # ID5
 │   └── utils.py                 # ID5 / helper dùng chung
 ├── tests/                       # Test nhỏ hoặc smoke test có thể chạy lại
-├── docs/                        # Ảnh, sơ đồ, kết quả bảng/chart xuất ra dạng ảnh
+├── docs/                        # Sơ đồ kiến trúc và kết quả bảng/chart
+│   └── spark_architecture.md    # ID5: runtime architecture và RDD DAG
 ├── REPORT.md                    # Báo cáo chung; mỗi người chỉ sửa section của mình
 ├── requirements.txt             # Danh sách thư viện cần cài
 ├── submit_job.sh                # Lệnh chạy Spark của ID5
@@ -82,4 +83,8 @@ python src/generate_logs.py
 bash submit_job.sh
 ```
 
-> Lệnh chính xác sẽ được ID5 cập nhật khi `main.py` và `submit_job.sh` hoàn thành.
+To invoke the application directly, use `python main.py --input-path data/raw_logs.txt --output-path output/top_countries.csv`.
+
+The submit script defaults to `local[*]`; `spark-submit --master` selects the deployment master. Set `SPARK_MASTER` to pass a different master to `spark-submit` (for example, `SPARK_MASTER=yarn bash submit_job.sh` is only a deployment example and requires a configured YARN cluster).
+
+`SparkSession` nhận master từ `spark-submit`; application không đặt master riêng. The CLI options are `--input-path` and `--output-path`.
