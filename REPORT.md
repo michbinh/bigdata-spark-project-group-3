@@ -331,11 +331,12 @@ spark-submit \
   src/main.py --input-path <input-path> --output-path <output-path>
 ```
 
-**Chưa kiểm chứng được cách này trên máy Windows đang dùng:** `--py-files` và
-`sc.addPyFile()` đều đi qua `FileUtil.chmod` của Hadoop, mà hàm này cần
-`winutils.exe`; thiếu `HADOOP_HOME` thì lệnh hỏng ngay ở bước đăng ký file.
-Đây là giới hạn của Windows chứ không phải của cơ chế `--py-files`. ID5 cần xác
-nhận lại khi dựng môi trường triển khai thật.
+Các lần thử ban đầu trên Windows gặp lỗi môi trường Python/Hadoop và có lần
+worker không import được module khi chạy từ thư mục khác. Sau khi cấu hình môi
+trường Spark/Hadoop phù hợp và dùng lệnh submit có `--py-files`, lần kiểm thử
+E2E local cuối cùng bằng `spark-submit.cmd` đã chạy thành công. Kết quả này chỉ
+xác nhận local Spark deployment trên Windows; cluster/distributed deployment
+chưa được kiểm thử.
 
 ### 3.3 Deployment Command and Reproducibility
 
@@ -381,16 +382,20 @@ python src/generate_logs.py
 bash submit_job.sh
 ```
 
-Trên Windows, vì Spark worker cần Python interpreter rõ ràng và `python` alias có thể bị app execution alias chặn, cách an toàn hơn là chạy Python trực tiếp trước khi gọi Spark hoặc đặt biến môi trường `PYSPARK_PYTHON` tới file `python.exe` thực tế:
+Trên Windows, Spark worker cần Python interpreter rõ ràng. Nếu cần chỉ định
+interpreter của virtual environment trong project, có thể đặt
+`PYSPARK_PYTHON` tới `<project-root>\.venv\Scripts\python.exe`; thay
+`<project-root>` bằng đường dẫn repo trên máy đang chạy:
 
 ```powershell
 cd "C:\path\to\bigdata-spark-project-group-3"
-$env:PYSPARK_PYTHON = "C:\Users\Admin\AppData\Local\Programs\Python\Python312\python.exe"
+$env:PYSPARK_PYTHON = "<project-root>\.venv\Scripts\python.exe"
 python src/generate_logs.py
 spark-submit --master local[*] --deploy-mode client --name LowLevel_FileFormat_Job --driver-memory 2g --executor-memory 2g --conf spark.sql.shuffle.partitions=10 --py-files src/rdd_processing.py,src/utils.py,src/generate_logs.py src/main.py --input-path data/raw_logs.txt --output-path output/top_countries.csv
 ```
 
-Lưu ý: câu lệnh trên là cách dùng thực tế trong môi trường Windows lúc kiểm thử. Nó không phải là một “mô hình triển khai cluster” đầy đủ, mà là cách chạy demo local phù hợp với môi trường này.
+Lưu ý: đây là hướng dẫn mẫu để chạy local trên Windows, không phải xác nhận
+cluster deployment.
 
 #### 3.3.3 `utils.py` và chức năng hữu ích
 
@@ -439,15 +444,20 @@ Lệnh này bao gồm các thành phần bắt buộc:
 
 #### 3.3.5 Ghi chú thực tế về Windows và `--py-files`
 
-Trong repo hiện tại, việc sử dụng `--py-files` là hợp lý vì Spark Python worker phải import được module được tham chiếu trong closure. Tuy nhiên, ở môi trường Windows đang kiểm thử, việc chạy `spark-submit` vẫn bị chặn bởi vấn đề hệ thống: Python worker không tìm thấy interpreter Python và Spark báo `Python was not found`; đồng thời còn có cảnh báo `HADOOP_HOME` / `winutils.exe` chưa được cấu hình. Đây là giới hạn của hệ thống local hiện tại, không phải là lỗi logic của project.
+Các lần kiểm thử ban đầu trên Windows thất bại do cấu hình môi trường Spark,
+Python worker và Hadoop chưa phù hợp; chúng không phản ánh kết quả deployment
+cuối cùng. Sau khi cấu hình môi trường phù hợp, `spark-submit.cmd` chạy E2E
+thành công ở local mode:
 
-Do đó, kết luận đáng tin cậy nhất là:
+- `--py-files` tải được các module Python cần thiết;
+- RDD processing hoàn tất và tạo Top 10 Countries;
+- invalid log count là **1.000**;
+- output file `output/top_countries.csv` được tạo thành công;
+- SparkContext dừng và process kết thúc với exit code **0**.
 
-- Python unit tests và import logic đã được kiểm tra thành công;
-- `main.py` và `src/main.py` có thể chạy đúng ở mức Python đơn thuần nếu môi trường Spark local hợp lệ;
-- `spark-submit` local trên Windows cần cấu hình thêm `PYSPARK_PYTHON` và có thể cần cài `winutils`/`HADOOP_HOME` nếu chạy trên môi trường cluster hoặc multi-node.
-
-Vì vậy, các bước dùng để tái tạo quá trình chạy Spark cần được ghi rõ là “được kiểm thử ở mức source code và local Python smoke test”, còn phần `spark-submit` cluster/Windows runtime cần xác nhận lại trong môi trường triển khai thực.
+Kết quả đã xác nhận là local Spark deployment trên Windows. Cluster hoặc
+distributed deployment chưa được kiểm thử; do đó không suy rộng kết quả local
+này thành xác nhận chạy thành công trên YARN, Kubernetes hay Standalone cluster.
 
 ## 4. File Formats and Partition Benchmark
 
