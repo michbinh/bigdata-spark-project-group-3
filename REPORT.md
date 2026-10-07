@@ -108,42 +108,84 @@ Driver làm 3 việc chính:
 
 Trong cluster mode, Driver gửi closures và tasks tới Executors trên Worker Nodes. Trong `local[*]`, tasks được local scheduler chạy trong cùng JVM với Driver, dùng các core local; không có Executors trên các Worker Node độc lập.
 
-#### 3.1.6 Runtime architecture của local demo
+#### 3.1.6 Runtime architecture: local RDD jobs and stage split
+
+Diagram dưới đây thống nhất startup của Spark Application, hai action/job của
+RDD pipeline, stage/shuffle và cách task chạy trong `local[*]`. Nhánh cluster
+được tách riêng và chỉ mang tính khái niệm; project chưa kiểm thử cluster
+deployment.
 
 ```mermaid
 flowchart TD
-  A[spark-submit --master local[*]] --> B[Driver: src/main.py]
-  B --> C[SparkSession]
-  C --> D[SparkContext]
-  D --> E[Local scheduler: local[*]]
-  E --> F[Tasks on local cores]
-  F --> G[Results returned to Driver]
+    Submit["spark-submit --master local[*]"] --> Application["Spark Application"]
+    Application --> Driver["Driver: src/main.py"]
+    Driver --> Session["SparkSession"]
+    Session --> Context["SparkContext"]
+    Context --> Scheduler["DAG Scheduler"]
+
+    subgraph Job1["Job 1 — triggered by count()"]
+        Raw["raw_logs"] --> TextFile["textFile(input_path)"]
+        TextFile --> Parse["map(parse_and_count)"]
+        Parse --> Filter["filter(valid records)"]
+        Filter --> Cache["cache parsed RDD"]
+        Cache --> Count["count() action"]
+        Count -. "action creates Job 1" .-> CountJob["Job 1"]
+    end
+    CountJob --> Scheduler
+    Scheduler --> J1Stage["Job 1 stage: narrow read / parse / filter"]
+    J1Stage --> J1Tasks["Tasks per input partition"]
+
+    subgraph Job2["Job 2 — triggered by take(10)"]
+        Cache --> Country["map(country, 1)"]
+        Country --> ReduceMap["reduceByKey: map-side combine"]
+        ReduceMap --> ReduceShuffle["Shuffle boundary: reduceByKey"]
+        ReduceShuffle --> ReduceMerge["reduceByKey: merge by country"]
+        ReduceMerge --> Sort["sortBy(count desc, country asc)"]
+        Sort --> Take["take(10) action"]
+        Sort -. "possible shuffle / stage boundary" .-> SortShuffle["sortBy global-sort shuffle (if required)"]
+        SortShuffle -. "if required" .-> Take
+        Take -. "action creates Job 2" .-> TakeJob["Job 2"]
+    end
+    TakeJob --> Scheduler
+    Scheduler --> J2Before["Job 2 stage(s) before reduceByKey shuffle"]
+    J2Before --> J2BeforeTasks["Tasks per partition"]
+    Scheduler --> J2After["Job 2 stage(s) after reduceByKey shuffle"]
+    J2After --> J2AfterTasks["Tasks per partition"]
+    Scheduler -. "only if sortBy creates another shuffle" .-> J2SortStage["Additional sort stage(s)"]
+    J2SortStage --> J2SortTasks["Tasks per partition"]
+    Take --> TopCountries["Top 10 Countries"]
+
+    J1Tasks --> LocalScheduler["Local scheduler: local[*]"]
+    J2BeforeTasks --> LocalScheduler
+    J2AfterTasks --> LocalScheduler
+    J2SortTasks -. "if present" .-> LocalScheduler
+    LocalScheduler --> LocalExecution["Local cores in the Driver JVM / local execution context"]
+    LocalExecution --> Driver
+
+    subgraph ClusterConcept["Cluster deployment — conceptual only; not this local E2E"]
+        ClusterSubmit["spark-submit --master cluster-master"] --> ClusterApp["Spark Application"]
+        ClusterApp --> ClusterDriver["Driver (client or cluster deploy mode)"]
+        ClusterDriver --> ClusterManager["Cluster Manager: Standalone / YARN / Kubernetes"]
+        ClusterManager --> Worker["Worker Node"]
+        Worker --> Executor["Executor process"]
+        Executor --> ClusterTasks["Tasks"]
+        Executor -. "concurrent task capacity" .-> Slots["Slots / executor cores"]
+    end
+
+    classDef conceptual stroke-dasharray: 5 5
+    class ClusterSubmit,ClusterApp,ClusterDriver,ClusterManager,Worker,Executor,ClusterTasks,Slots conceptual
 ```
 
-Đây là luồng thực tế được cấu hình cho demo local. Không có hai Worker Node hay Executor process riêng được giả định hoặc tuyên bố đã kiểm thử. Diagram kiến trúc cluster tổng quát, có Cluster Manager/Worker/Executor, nằm tại `docs/spark_architecture.md`.
-
-#### 3.1.7 Diagram luồng thực thi / DAG
-
-```mermaid
-flowchart TD
-  subgraph J1[Job 1: count()]
-    A[textFile] --> B[map parse_and_count]
-    B --> C[filter valid]
-    C --> D[cache]
-    D --> E[count action]
-  end
-  subgraph J2[Job 2: take(top_n)]
-    D --> F[map country, 1]
-    F --> G[reduceByKey]
-    G --> H[Shuffle boundary]
-    H --> I[sortBy count desc, country asc]
-    I --> K[take action]
-  end
-  B -. invalid record .-> L[Accumulator invalid_count]
-  K --> M[Top countries]
-```
-
-`count()` và `take()` là hai action, không phải một Job duy nhất. `reduceByKey` cần shuffle để gộp cùng country; `sortBy` thực hiện sắp xếp sau bước tổng hợp. Accumulator được cập nhật lúc parse record lỗi, độc lập với giá trị do `count()` trả về.
+RDD transformations build lineage/DAG lazily; an action triggers a job. The
+DAG Scheduler divides jobs into stages at dependency and shuffle boundaries,
+and each stage runs as tasks over partitions. `reduceByKey` introduces a
+shuffle boundary; `sortBy` may introduce a further shuffle and stage boundary.
+Stage/task counts depend on Spark runtime, input partitions, and configuration;
+the diagram does not assert fixed counts. In `local[*]`, tasks run through the
+local scheduler on local cores in the Driver JVM, without separate Worker Node
+or Executor processes. The cluster branch is conceptual and is not a tested
+project execution path. Accumulator updates for invalid records occur during
+parsing and are separate from the count returned by `count()`.
 
 #### 3.1.8 DataFrame/SQL plan và native RDD
 
