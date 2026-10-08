@@ -70,6 +70,29 @@ SUMMARY_COLUMNS = [
     "output_path",
 ]
 
+READ_RESULT_COLUMNS = [
+    "format",
+    "run_number",
+    "read_time_sec",
+    "result_rows",
+]
+
+READ_SUMMARY_COLUMNS = [
+    "format",
+    "official_runs",
+    "median_read_time_sec",
+]
+
+PARTITION_SUMMARY_COLUMNS = [
+    "experiment",
+    "output_path",
+    "write_time_sec",
+    "part_file_count",
+    "size_bytes",
+    "size_mb",
+    "avg_part_size_mb",
+]
+
 # ---------------------------------------------------------------------
 # Spark and canonical dataset preparation
 # ---------------------------------------------------------------------
@@ -214,6 +237,21 @@ def get_output_size(output_path):
         "size_bytes": total_bytes,
         "size_mb": total_bytes / (1024 ** 2),
     }
+
+def write_csv_table(path, rows, fieldnames):
+    """Write a list of dictionaries as a CSV table."""
+    with open(
+        path,
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
 # ---------------------------------------------------------------------
 # Main write benchmark function
@@ -380,6 +418,250 @@ def run_write_benchmark(df, output_path):
     return benchmark_results, benchmark_summary, output_paths
 
 # ---------------------------------------------------------------------
+# ID4 read query and partition benchmark
+# ---------------------------------------------------------------------
+
+def _read_benchmark_dataframe(spark, fmt, input_path, canonical_schema):
+    """Read one ID3 format output with a consistent benchmark schema."""
+    format_path = os.path.join(input_path, fmt)
+
+    if fmt == "csv":
+        return (
+            spark.read
+            .option("header", True)
+            .schema(canonical_schema)
+            .csv(format_path)
+        )
+    if fmt == "json":
+        return (
+            spark.read
+            .schema(canonical_schema)
+            .json(format_path)
+        )
+    if fmt == "parquet":
+        return spark.read.parquet(format_path)
+    if fmt == "orc":
+        return spark.read.orc(format_path)
+
+    raise ValueError(f"Unsupported format: {fmt}")
+
+
+def _run_fixed_read_query(df):
+    """Run the fixed ID4 aggregate query and trigger execution."""
+    return (
+        df
+        .groupBy("Carrier")
+        .agg(F.avg("ArrDelay").alias("avg_arr_delay"))
+        .collect()
+    )
+
+
+def _partition_write_result(experiment, output_path, write_time_sec):
+    """Build one partition experiment result row from actual disk files."""
+    size_info = get_output_size(output_path)
+    part_file_count = size_info["part_file_count"]
+    avg_part_size_mb = (
+        size_info["size_mb"] / part_file_count
+        if part_file_count
+        else 0
+    )
+
+    return {
+        "experiment": experiment,
+        "output_path": output_path,
+        "write_time_sec": write_time_sec,
+        "part_file_count": part_file_count,
+        "size_bytes": size_info["size_bytes"],
+        "size_mb": size_info["size_mb"],
+        "avg_part_size_mb": avg_part_size_mb,
+    }
+
+
+def run_read_and_partition_benchmark(spark, input_path):
+    """
+    Run ID4's read query benchmark and partition-control experiments.
+
+    ``input_path`` is the ID3 format benchmark root containing the four output
+    directories: csv, json, parquet and orc. Results are written to a sibling
+    ``partition_test`` directory so ID3's canonical write outputs stay intact.
+    """
+    for fmt in FORMATS:
+        format_path = os.path.join(input_path, fmt)
+        if not os.path.isdir(format_path):
+            raise FileNotFoundError(
+                f"Missing ID3 {fmt.upper()} output directory: {format_path}"
+            )
+
+    output_root = os.path.join(
+        os.path.dirname(os.path.abspath(input_path)),
+        "partition_test",
+    )
+    os.makedirs(output_root, exist_ok=True)
+
+    canonical_schema = spark.read.parquet(
+        os.path.join(input_path, "parquet")
+    ).schema
+
+    print("\n" + "=" * 70)
+    print("ID4 READ QUERY BENCHMARK")
+    print("=" * 70)
+    print("Query: SELECT Carrier, AVG(ArrDelay) FROM data GROUP BY Carrier")
+    print(f"Warm-up rounds    : {WARMUP_RUNS}")
+    print(f"Official rounds   : {OFFICIAL_RUNS}")
+    print(f"Output root       : {output_root}")
+
+    read_results = []
+    read_summary = []
+
+    for fmt in FORMATS:
+        df = _read_benchmark_dataframe(
+            spark,
+            fmt,
+            input_path,
+            canonical_schema,
+        )
+
+        _run_fixed_read_query(df)
+        print(f"{fmt.upper():8} warm-up completed.")
+
+        read_times = []
+
+        for run_number in range(1, OFFICIAL_RUNS + 1):
+            start_time = time.perf_counter()
+            query_result = _run_fixed_read_query(df)
+            read_time = time.perf_counter() - start_time
+            read_times.append(read_time)
+
+            read_results.append({
+                "format": fmt,
+                "run_number": run_number,
+                "read_time_sec": read_time,
+                "result_rows": len(query_result),
+            })
+
+            print(
+                f"{fmt.upper():8} | "
+                f"Run: {run_number} | "
+                f"Read Query Time: {read_time:8.3f} s | "
+                f"Rows: {len(query_result)}"
+            )
+
+        read_summary.append({
+            "format": fmt,
+            "official_runs": OFFICIAL_RUNS,
+            "median_read_time_sec": statistics.median(read_times),
+        })
+
+    read_runs_path = os.path.join(
+        output_root,
+        "read_benchmark_runs.csv",
+    )
+    read_summary_path = os.path.join(
+        output_root,
+        "read_benchmark_summary.csv",
+    )
+    write_csv_table(
+        read_runs_path,
+        read_results,
+        READ_RESULT_COLUMNS,
+    )
+    write_csv_table(
+        read_summary_path,
+        read_summary,
+        READ_SUMMARY_COLUMNS,
+    )
+
+    print("\n" + "=" * 70)
+    print("ID4 PARTITION CONTROL BENCHMARK")
+    print("=" * 70)
+
+    base_df = _read_benchmark_dataframe(
+        spark,
+        "parquet",
+        input_path,
+        canonical_schema,
+    )
+
+    partition_results = []
+
+    repartition_output = os.path.join(output_root, "repartition_20")
+    start_time = time.perf_counter()
+    (
+        base_df
+        .repartition(20)
+        .write
+        .mode("overwrite")
+        .parquet(repartition_output)
+    )
+    partition_results.append(
+        _partition_write_result(
+            "repartition_20",
+            repartition_output,
+            time.perf_counter() - start_time,
+        )
+    )
+
+    coalesce_output = os.path.join(output_root, "coalesce_2")
+    start_time = time.perf_counter()
+    (
+        base_df
+        .coalesce(2)
+        .write
+        .mode("overwrite")
+        .parquet(coalesce_output)
+    )
+    partition_results.append(
+        _partition_write_result(
+            "coalesce_2",
+            coalesce_output,
+            time.perf_counter() - start_time,
+        )
+    )
+
+    partition_by_output = os.path.join(output_root, "by_year_month")
+    start_time = time.perf_counter()
+    (
+        base_df
+        .write
+        .mode("overwrite")
+        .partitionBy("Year", "Month")
+        .parquet(partition_by_output)
+    )
+    partition_results.append(
+        _partition_write_result(
+            "partition_by_year_month",
+            partition_by_output,
+            time.perf_counter() - start_time,
+        )
+    )
+
+    for result in partition_results:
+        print(
+            f"{result['experiment']:<24} | "
+            f"Time: {result['write_time_sec']:8.3f} s | "
+            f"Files: {result['part_file_count']:5} | "
+            f"Size: {result['size_mb']:10.2f} MB | "
+            f"Avg file: {result['avg_part_size_mb']:8.2f} MB"
+        )
+
+    partition_summary_path = os.path.join(
+        output_root,
+        "partition_benchmark_summary.csv",
+    )
+    write_csv_table(
+        partition_summary_path,
+        partition_results,
+        PARTITION_SUMMARY_COLUMNS,
+    )
+
+    print("\nID4 outputs:")
+    print(f"Read runs         : {read_runs_path}")
+    print(f"Read summary      : {read_summary_path}")
+    print(f"Partition summary : {partition_summary_path}")
+
+    return read_results, read_summary, partition_results
+
+# ---------------------------------------------------------------------
 # Result export
 # ---------------------------------------------------------------------
 
@@ -513,6 +795,11 @@ def main():
                 f"{fmt.upper():8} -> "
                 f"{output_paths[fmt]}"
             )
+
+        run_read_and_partition_benchmark(
+            spark,
+            args.output_path,
+        )
 
     finally:
         if benchmark_df is not None:

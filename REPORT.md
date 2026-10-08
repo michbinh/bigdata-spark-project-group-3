@@ -632,6 +632,210 @@ environment.
 
 <!-- Owner: ID4. Query time, repartition, coalesce, partitionBy and small-file problem. -->
 
+### 4.3 Read and Partition Benchmark
+
+### 4.3 Read and Partition Benchmark
+
+#### 4.3.1 Read Query Benchmark
+
+The read benchmark evaluates how efficiently CSV, JSON, Parquet, and ORC execute the same analytical query:
+
+```sql
+SELECT Carrier, AVG(ArrDelay)
+FROM data
+GROUP BY Carrier;
+```
+
+The query accesses only two columns, `Carrier` and `ArrDelay`, from the 31-column canonical dataset. Therefore, it provides an appropriate workload for observing the practical benefit of column pruning in columnar formats.
+
+To keep the comparison consistent, CSV and JSON were read using the previously defined canonical schema rather than performing schema inference during the timed runs. Parquet and ORC recovered their stored schema directly from file metadata.
+
+For each format, one warm-up query was executed and excluded from measurement. Three official runs were then performed, with `.collect()` used to trigger full Spark execution. The median execution time was used as the final Read Query Time.
+
+| Format | Run 1 (s) | Run 2 (s) | Run 3 (s) | Median Read Time (s) |
+|---|---:|---:|---:|---:|
+| CSV | 2.786 | 2.586 | 2.396 | **2.586** |
+| JSON | 2.321 | 2.496 | 2.368 | **2.368** |
+| Parquet | 0.350 | 0.414 | 0.397 | **0.397** |
+| ORC | 0.430 | 0.404 | 0.345 | **0.404** |
+
+All four formats returned 14 result rows, corresponding to the 14 distinct carriers in the dataset, confirming that the same logical query was executed successfully for each format.
+
+The results show a clear difference between the row-oriented text formats and the columnar binary formats. Parquet achieved the lowest median query time at approximately **0.397 seconds**, closely followed by ORC at **0.404 seconds**. In comparison, JSON required approximately **2.368 seconds**, while CSV required **2.586 seconds**.
+
+Under this benchmark configuration, Parquet was therefore approximately **6.5 times faster than CSV** and approximately **6.0 times faster than JSON** for the tested query. ORC demonstrated nearly identical performance to Parquet.
+
+These results are consistent with the storage characteristics described in Section 4.1. Because the query requires only two out of 31 columns, Parquet and ORC can exploit their columnar layouts to avoid reading unrequested column data. CSV and JSON may perform parser-level projection, but their record-oriented text representation still requires substantially more parsing of the underlying records.
+
+However, the measured Read Query Time should not be interpreted as pure file-scan time. The benchmark includes file access, parsing or decoding, decompression, column pruning, aggregation, and Spark shuffle operations required by the `GROUP BY`. Furthermore, because the query contains no `WHERE` condition, the observed advantage cannot be attributed to predicate pushdown or metadata-based row-group skipping.
+
+Within this dataset and execution environment, the experiment therefore provides empirical evidence that Parquet and ORC are considerably more suitable than CSV and JSON for selective analytical queries involving a small subset of columns.
+
+---
+
+#### 4.3.2 Partition Control
+
+A **partition** is a chunk of a dataset that Spark can process independently. During a Spark stage, each partition is typically processed by one task. Therefore, the number and size of partitions directly influence parallelism, scheduling overhead, memory usage, and the physical files produced during write operations.
+
+Too few partitions may reduce available parallelism and cause individual tasks to process large amounts of data, increasing memory pressure. Conversely, too many partitions may generate many small tasks, increasing scheduling overhead and potentially producing a large number of small output files.
+
+Partition control therefore aims to balance:
+
+- parallelism;
+- per-task workload;
+- scheduling overhead; and
+- output file size.
+
+A common initial estimate is:
+
+```text
+Number of partitions ≈ Dataset size / Target partition size
+```
+
+A target around **128 MB** may be used as an initial rule of thumb, but there is no universally optimal partition size. The appropriate number depends on the workload, cluster resources, data distribution, file format, and downstream access pattern.
+
+Spark computational partitioning should also be distinguished from storage partitioning.
+
+- **Spark/DataFrame partitions** determine how records are distributed for computation and can be changed using `repartition()` and `coalesce()`.
+- **Storage partitions** are created using `partitionBy()` during writes and physically organize files into directories based on column values. This organization can later support **partition pruning**, allowing Spark to avoid reading directories that cannot satisfy a filter on the partition columns.
+
+---
+
+#### 4.3.3 `repartition()` and `coalesce()`
+
+Both `repartition()` and `coalesce()` modify the number of DataFrame partitions, but they use different execution strategies.
+
+`repartition()` can either increase or decrease the partition count. It performs a shuffle that redistributes records across the cluster and is therefore a wide transformation. This redistribution generally produces more balanced partitions but introduces additional network, serialization, and shuffle overhead.
+
+`coalesce()` is primarily used to reduce the number of partitions. It normally avoids a full shuffle by combining existing partitions into a smaller number of partitions. This makes it less expensive in many situations, although the resulting partition sizes may be less evenly balanced.
+
+In general:
+
+- `repartition()` is appropriate when data needs to be redistributed evenly or when the number of partitions must be increased.
+- `coalesce()` is appropriate when the main objective is to reduce the number of partitions while minimizing shuffle overhead.
+
+The project evaluates these behaviors by writing the same Parquet dataset using:
+
+```python
+df.repartition(20)
+```
+
+and:
+
+```python
+df.coalesce(2)
+```
+
+The resulting number of files, average file size, total output size, and write execution time were then measured.
+
+---
+
+#### 4.3.4 Small File Problem
+
+The **Small File Problem** occurs when a dataset is represented by a large number of very small files.
+
+Although individual small files are valid, large collections of them can reduce performance because Spark and the underlying filesystem must repeatedly perform metadata lookup, file discovery, file opening, task creation, and scheduling operations.
+
+Common causes include:
+
+- writing data with too many Spark partitions;
+- using `partitionBy()` with high-cardinality or highly skewed columns;
+- frequent streaming or micro-batch writes;
+- repeatedly appending small amounts of data; and
+- filtering a dataset significantly while retaining the original large partition count.
+
+The problem can be mitigated by:
+
+- controlling output partition counts using `repartition()` or `coalesce()`;
+- avoiding excessively high-cardinality storage partition columns;
+- batching data before writing where possible; and
+- periodically compacting existing small files into fewer, larger files.
+
+File compaction can be implemented using Spark jobs with `repartition()` or `coalesce()`, while table formats such as Delta Lake, Apache Iceberg, and Apache Hudi also provide optimization mechanisms for managing file layout.
+
+---
+
+#### 4.3.5 Partition Control Experiment
+
+The partition experiment used the canonical Parquet dataset as its input and evaluated three different output strategies:
+
+1. `repartition(20)` — redistribute the dataset into 20 Spark partitions before writing;
+2. `coalesce(2)` — reduce the dataset to two Spark partitions before writing;
+3. `partitionBy("Year", "Month")` — physically organize the output into storage directories according to `Year` and `Month`.
+
+The measured results were:
+
+| Experiment | Write Time (s) | Part Files | Total Size (MiB) | Average File Size (MiB) |
+|---|---:|---:|---:|---:|
+| `repartition(20)` | 12.987 | 20 | 149.56 | 7.48 |
+| `coalesce(2)` | 11.995 | 2 | 135.49 | 67.75 |
+| `partitionBy(Year, Month)` | 8.599 | 27 | 136.92 | 5.07 |
+
+These results demonstrate that Spark partition count has a direct effect on the number and size of output files.
+
+With `repartition(20)`, Spark explicitly redistributed the dataset into 20 partitions before the write. As expected, the resulting Parquet dataset contained **20 part files**, with an average size of approximately **7.48 MiB**. Although redistribution can produce more balanced partitions, the experiment required a full shuffle, contributing to the highest observed write time of approximately **12.99 seconds**.
+
+Using `coalesce(2)` reduced the output to only **two part files**, each averaging approximately **67.75 MiB**. This produced substantially larger files and avoided the proliferation of small output files. The write completed in approximately **12.00 seconds**, slightly faster than `repartition(20)` in this run. The result is consistent with the lower-shuffle design of `coalesce()`, although the difference is small enough that it should not be treated as a universal performance guarantee.
+
+The `partitionBy("Year", "Month")` experiment produced **27 part files** across the physical partition directory structure and completed in approximately **8.60 seconds**. Since the dataset contains only the year 2015 and 12 months, the storage layout is logically organized into directories such as:
+
+```text
+Year=2015/
+    Month=1/
+    Month=2/
+    ...
+    Month=12/
+```
+
+However, the number of storage directories does **not** imply that exactly one data file will exist per directory. Multiple Spark tasks may write files into the same partition directory, which explains why 12 month values resulted in 27 physical part files.
+
+This distinction is important: `partitionBy()` controls the **directory organization of stored data**, whereas `repartition()` and `coalesce()` primarily control the **Spark execution partitions** that feed the write operation.
+
+---
+
+#### 4.3.6 Interpretation of the Partition Results
+
+The experiment illustrates the trade-off between parallelism and file granularity.
+
+`repartition(20)` produced the greatest degree of output parallelism among the tested computational partition strategies, but also generated twenty relatively small files. For a dataset of approximately 150 MiB, an average file size of only around 7.48 MiB is considerably below the commonly used large-file target ranges for analytical storage. Increasing the partition count further would likely worsen the Small File Problem.
+
+`coalesce(2)` moved in the opposite direction. By reducing the dataset to two partitions, it generated only two relatively large Parquet files. This layout reduces file-discovery and file-opening overhead for future reads. However, excessively aggressive coalescing on larger datasets could reduce write parallelism and create disproportionately large tasks.
+
+The `partitionBy("Year", "Month")` output addresses a different problem. Its primary purpose is not to reduce the number of files but to organize the dataset according to common filtering dimensions. A later query such as:
+
+```sql
+SELECT *
+FROM flights
+WHERE Year = 2015
+  AND Month = 7;
+```
+
+can potentially read only the corresponding `Year=2015/Month=7` directory instead of scanning the entire dataset. This optimization is known as **partition pruning**.
+
+However, storage partitioning also increases the risk of small files. In this experiment, the partitioned output contained 27 files with an average size of approximately **5.07 MiB**, smaller than both the `repartition(20)` and `coalesce(2)` outputs. Therefore, although `partitionBy()` can improve filtered reads, it must be applied carefully. Partitioning on columns with very high cardinality could create a large number of directories and many small files.
+
+The results therefore illustrate that these operations should not be treated as interchangeable optimizations:
+
+- `repartition()` primarily redistributes data and controls computational parallelism;
+- `coalesce()` efficiently reduces computational partitions and output file counts;
+- `partitionBy()` creates a physical directory layout designed primarily for later query pruning.
+
+The appropriate strategy depends on the objective of the workload rather than on minimizing the partition count alone.
+
+---
+
+#### 4.3.7 Limitations
+
+The same experimental limitations described for the write benchmark also apply to the read and partition experiments. All tests were executed using `local[*]` on a single machine, so the results do not capture network shuffle behavior or distributed filesystem characteristics that would occur in a multi-node Spark cluster.
+
+Only three official read runs were performed for each format, and operating-system caching was not explicitly controlled. Therefore, the absolute timing values should be interpreted as results for the tested environment rather than universal performance expectations.
+
+The partition experiments were also executed once per strategy rather than through repeated benchmark rounds. Their measured write times are therefore useful for illustrating observed behavior but provide weaker evidence for direct timing comparisons than the three-run median protocol used for the format benchmark.
+
+Finally, the experiment records average output file size, but an average alone does not measure partition balance. Two outputs can have the same average while containing substantially different minimum and maximum file sizes. A more detailed experiment could additionally record the smallest and largest part files to quantify partition-size skew.
+
+Overall, the benchmark demonstrates two complementary findings. First, Parquet and ORC substantially outperform CSV and JSON for the tested selective analytical query. Second, Spark partition-management strategies materially influence the number, size, and physical organization of output files, demonstrating the practical trade-off between parallel processing, write cost, storage organization, and the Small File Problem.
+
 ## 5. Debugging and Performance Optimisation
 
 ### 5.1 Data Skew and Slow Joins
