@@ -1,0 +1,191 @@
+{
+    "fields": [
+        {
+            "metadata": {},
+            "name": "Year",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "Month",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DAY_OF_WEEK",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "Carrier",
+            "nullable": true,
+            "type": "string"
+        },
+        {
+            "metadata": {},
+            "name": "FLIGHT_NUMBER",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "TAIL_NUMBER",
+            "nullable": true,
+            "type": "string"
+        },
+        {
+            "metadata": {},
+            "name": "ORIGIN_AIRPORT",
+            "nullable": true,
+            "type": "string"
+        },
+        {
+            "metadata": {},
+            "name": "DESTINATION_AIRPORT",
+            "nullable": true,
+            "type": "string"
+        },
+        {
+            "metadata": {},
+            "name": "SCHEDULED_DEPARTURE",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DEPARTURE_TIME",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DEPARTURE_DELAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "TAXI_OUT",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "WHEELS_OFF",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "SCHEDULED_TIME",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "ELAPSED_TIME",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "AIR_TIME",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DISTANCE",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "WHEELS_ON",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "TAXI_IN",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "SCHEDULED_ARRIVAL",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "ARRIVAL_TIME",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "ArrDelay",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "DIVERTED",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "CANCELLED",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "CANCELLATION_REASON",
+            "nullable": true,
+            "type": "string"
+        },
+        {
+            "metadata": {},
+            "name": "AIR_SYSTEM_DELAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "SECURITY_DELAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "AIRLINE_DELAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "LATE_AIRCRAFT_DELAY",
+            "nullable": true,
+            "type": "integer"
+        },
+        {
+            "metadata": {},
+            "name": "WEATHER_DELAY",
+            "nullable": true,
+            "type": "integer"
+        }
+    ],
+    "type": "struct"
+}

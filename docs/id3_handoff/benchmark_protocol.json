@@ -1,0 +1,49 @@
+{
+    "dataset": {
+        "name": "2015 Flight Delays and Cancellations",
+        "source_file": "C:\\BigDataProject\\data\\raw\\airline\\flights.csv",
+        "row_count": 5819079,
+        "column_count": 31,
+        "arrdelay_null_policy": "preserve",
+        "rows_removed": 0
+    },
+    "canonical_mapping": {
+        "YEAR": "Year",
+        "MONTH": "Month",
+        "AIRLINE": "Carrier",
+        "ARRIVAL_DELAY": "ArrDelay"
+    },
+    "benchmark": {
+        "formats": [
+            "csv",
+            "json",
+            "parquet",
+            "orc"
+        ],
+        "format_order": [
+            "csv",
+            "json",
+            "parquet",
+            "orc"
+        ],
+        "warmup_runs": 1,
+        "official_runs": 3,
+        "summary_statistic": "median",
+        "input_partitions": 16,
+        "persistence": "DISK_ONLY",
+        "compression_policy": {
+            "csv": "default / no explicit compression option",
+            "json": "default / no explicit compression option",
+            "parquet": "snappy",
+            "orc": "snappy"
+        },
+        "write_mode": "overwrite",
+        "csv_header": true,
+        "disk_size_rule": "recursive sum of part-* files only"
+    },
+    "spark": {
+        "spark_version": "3.4.1",
+        "master": "local[*]",
+        "shuffle_partitions": "8"
+    }
+}

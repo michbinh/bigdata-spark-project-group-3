@@ -25,3 +25,5 @@ logs/
 
 # Keep small reproducible demo input under data/ versioned.
 !data/raw_logs.txt
+# Task 2 source dataset downloaded locally; never commit it.
+/data/raw/airline/

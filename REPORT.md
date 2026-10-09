@@ -1,8 +1,8 @@
 # Big Data Project Report
 
-> **Project:** Low-level RDD Processing, File-format Benchmarking and Spark Deployment  
-> **Team:** [Update team name]  
-> **Last updated:** [YYYY-MM-DD]
+> **Project:** Low-level RDD Processing, File-format Benchmarking and Spark Deployment<br>
+> **Team:** Group 3<br>
+> **Last updated:** 2026-10-09
 
 ## Table of Contents
 
@@ -18,11 +18,33 @@
 
 ### 1.1 Objective
 
-<!-- Team lead: define problem, input, expected output and scope. -->
+This project implements and evaluates three complementary Apache Spark tasks.
+Task 1 uses the low-level RDD API to parse web access logs, reject malformed
+records, enrich valid records with a country lookup, aggregate access counts,
+and produce a deterministic Top 10. Task 2 benchmarks CSV, JSON, Parquet, and
+ORC write/read behaviour and evaluates partition control with `repartition`,
+`coalesce`, and `partitionBy`. Task 3 packages the application for reproducible
+execution through `spark-submit`, including separate Task 1 and Task 2 entry
+paths and an optional live Spark UI observation period.
+
+The two inputs are the committed, reproducible Task 1 sample
+`data/raw_logs.txt` and the locally downloaded Task 2 dataset
+`data/raw/airline/flights.csv`. Principal outputs are the Task 1 country summary
+and the generated Task 2 format, read, and partition benchmark results.
 
 ### 1.2 Repository Structure and Reproducibility
 
-<!-- Describe how to run from a clean clone. -->
+From a clean clone, the Python dependency is installed from
+`requirements.txt`; Task 1 can then run immediately against the versioned log
+sample. Task 2 requires an explicit download of the public flight dataset
+before the benchmark is launched. Both tasks are dispatched by `src/main.py`
+and can be submitted through `submit_job.sh`.
+
+The large airline dataset and generated benchmark output directories are local
+runtime data and are not committed. Source code, the report, operational
+documentation, and the verified Task 2 benchmark table/chart artefacts remain
+in the repository so that the workflow, evidence, and presentation material
+can be reviewed independently of those large files.
 
 ## 2. RDD Processing and Shared Variables
 
@@ -35,6 +57,10 @@ new one. They are also resilient because Spark records how each RDD depends on
 its predecessors. This dependency history, or **lineage**, allows Spark to
 recompute a lost partition from its source and the required transformations
 without maintaining a full replica of every intermediate dataset.
+Unlike replication-based fault tolerance, which stores redundant data copies
+in advance, lineage reconstructs only missing partitions when recovery is
+needed. This reduces the need for full replication of intermediate RDDs, at the
+cost of recomputation after a failure.
 
 RDD transformations are evaluated lazily. Calls such as `flatMap()`, `map()`,
 `filter()`, and `reduceByKey()` first extend the lineage and the associated
@@ -62,10 +88,24 @@ recorded transformations.
 | Control | Fine-grained control over custom transformations and partition-level processing | Declarative control through column expressions, SQL, joins, and aggregations |
 | Typical use cases | Unstructured input, custom parsers, and low-level algorithms | Structured ETL, analytical queries, and schema-based processing |
 
+At code level, the RDD path expresses the key-value mechanics explicitly,
+whereas the equivalent DataFrame path declares a relational aggregation:
+
+```python
+rdd_counts = enriched_rdd.map(lambda row: (row["country"], 1)).reduceByKey(add)
+df_counts = enriched_df.groupBy("country").count()
+```
+
 Task 1 deliberately uses RDDs because `data/raw_logs.txt` contains raw web
 access-log text that requires custom parsing, and the assignment explicitly
 requires Spark's Low-Level API. A DataFrame is introduced only after the RDD
 pipeline has produced the small, structured Top 10 result.
+
+The verified `local[*]` execution exercises the same lazy transformations,
+actions, shuffle, broadcast, and accumulator APIs, but all components share one
+machine. It therefore does not reproduce cluster-network costs, executor-host
+failures, or multi-node scheduling behaviour. Caching reduces repeated work in
+either mode; it does not replace lineage-based recovery.
 
 ### 2.2 Core RDD Pipeline
 
@@ -82,11 +122,12 @@ records. `flatMap(_expand_text_record)` then normalises each raw record into one
 or more logical lines before parsing; for the generated one-record-per-line
 input, it preserves one logical line per record. The following `map()` invokes
 `parse_log_line` through `_parse_with_counter`. The parser validates the IPv4
-address, timestamp and request layout, numeric HTTP status in the valid range,
-and the request method, endpoint, and HTTP version. A valid line becomes a
-`LogRecord` dictionary with `ip`, `timestamp`, `method`, `endpoint`, and
-`status_code`; malformed input becomes `None`. The subsequent `filter()` removes
-these `None` values, leaving only parsed records.
+address, overall log/request layout, numeric HTTP status in the valid range,
+and the request method, endpoint, and HTTP version. It extracts the bracketed
+timestamp text but does not validate its calendar semantics. A valid line
+becomes a `LogRecord` dictionary with `ip`, `timestamp`, `method`, `endpoint`,
+and `status_code`; malformed input becomes `None`. The subsequent `filter()`
+removes these `None` values, leaving only parsed records.
 
 After the downstream country-enrichment handoff described in Section 2.3, each
 enriched record is mapped to the Pair RDD entry `(country, 1)`. This is the
@@ -141,7 +182,12 @@ def build_parsed_rdd(
 
 
 def aggregate_country_access(enriched_rdd: Any):
-    country_pairs = enriched_rdd.map(lambda record: (record["country"], 1))
+    records_with_country = enriched_rdd.filter(
+        lambda record: bool(record.get("country"))
+    )
+    country_pairs = records_with_country.map(
+        lambda record: (record["country"], 1)
+    )
     return country_pairs.reduceByKey(add)
 
 
@@ -175,15 +221,15 @@ problems. Spark offers two kinds, serving opposite directions of data flow:
 
 #### 2.3.1 Broadcast Variable
 
-A **broadcast variable** is a read-only value that the driver sends to each
-executor **exactly once** and that the executor then caches in memory, instead
-of shipping it with every task.
+A **broadcast variable** is a read-only value distributed from the driver and
+cached for reuse by executor tasks, instead of being serialised with every task
+closure. Application code creates one with `sc.broadcast(value)` and reads it
+through `.value`; executors must not use it as mutable shared state.
 
-The driver creates one with `sc.broadcast(value)`. Spark splits the value into
-blocks and distributes them peer-to-peer: an executor that already holds a block
-can forward it to another executor, so the load on the driver does not grow
-linearly with the number of nodes. On the executor side, code reads the value
-through the `.value` attribute.
+Spark's `TorrentBroadcast` implementation divides a broadcast into blocks and
+can distribute those blocks with peer-assisted, BitTorrent-like fetching. This
+describes the available distribution mechanism, not a guarantee that every
+executor communicates directly with another executor in every run.
 
 In this project, a broadcast variable carries the `ip_country_map` lookup table,
 which maps an IPv4 `/24` prefix to a country name. Every record needs this table
@@ -336,8 +382,9 @@ records, with no record counted twice.
 
 #### 2.3.5 Verification results
 
-Executed on PySpark 3.5.9 (`local[*]`, OpenJDK 17) against a 10,000-line
-`data/raw_logs.txt`:
+The 10,000-line `data/raw_logs.txt` contract and country totals were rechecked
+directly against the repository parser and lookup table. The current automated
+test run uses Python 3.11.9, PySpark 3.5.6, `local[1]`, and OpenJDK 8:
 
 | Measure | Result |
 |---|---|
@@ -378,7 +425,7 @@ aggregated counts preserved all 9,000 valid records.
 | Distinct countries | 14 |
 | Aggregated access count | 9,000 |
 | Top 10 rows | 10 |
-| Unit tests | 5/5 PASS |
+| Unit tests | 10/10 PASS |
 | Accumulator stability | YES |
 
 #### Top 10 Countries by Access Count

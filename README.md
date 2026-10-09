@@ -83,3 +83,63 @@ bash submit_job.sh
 ```
 
 > Lệnh chính xác sẽ được ID5 cập nhật khi `main.py` và `submit_job.sh` hoàn thành.
+
+> **Cập nhật:** ID5 hiện đã hoàn thành; các lệnh vận hành chính thức được ghi trong các mục Task 1 và Task 2 bên dưới.
+
+## Môi trường runtime và preflight
+
+Môi trường Python đã xác minh dùng Python 3.11.x và PySpark 3.5.6. Spark runtime
+được gọi bởi `spark-submit` cũng phải là Spark 3.5.6 để khớp với PySpark. Kết
+quả preflight hiện tại cho thấy Java thực tế là OpenJDK 8 (`1.8.0_502`) và
+`JAVA_HOME` trỏ tới JDK 8. `submit_job.sh` được chạy bằng Git Bash trên Windows.
+
+Không dùng lẫn standalone Spark 3.4.1 với PySpark 3.5.6. Nếu
+`spark-submit --version` vẫn báo 3.4.1, cần sửa `PATH`/Spark runtime để lệnh trỏ
+tới bản 3.5.6 trước khi demo.
+
+Chạy block PowerShell duy nhất sau để kiểm tra executable Python, PySpark,
+SparkSession, Spark runtime, Java, `JAVA_HOME`, input Task 1 và Git Bash:
+
+```powershell
+python --version
+python -c "import sys, pyspark; from pyspark.sql import SparkSession; print(sys.executable); print('PySpark:', pyspark.__version__); print('SparkSession import: OK')"
+spark-submit --version
+java -version
+$env:JAVA_HOME
+Test-Path .\data\raw_logs.txt
+& "C:\Program Files\Git\bin\bash.exe" --version
+```
+
+## Chạy Task 1
+
+```powershell
+python -m unittest discover -s tests -p "test_top10_pipeline.py" -v
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh'
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task1 --keep-ui-seconds 90'
+```
+
+Spark UI thường có tại <http://localhost:4040> và chỉ truy cập được khi Spark
+application còn sống. `--keep-ui-seconds 90` giữ application sau khi đã in kết
+quả để quan sát UI; thời gian chờ không thuộc benchmark timing.
+
+## Chạy Task 2
+
+```powershell
+python .\src\format_benchmark.py --download-only
+python .\src\format_benchmark.py
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task2 --keep-ui-seconds 90'
+```
+
+Input mặc định là `data/raw/airline/flights.csv`; output mặc định là
+`output/format_benchmark`, với kết quả partition ở `output/partition_test`.
+Chuẩn bị khoảng 10 GB dung lượng trống. Full benchmark dùng chế độ `overwrite`
+trong các generated output directory. Không commit dataset airline hoặc output
+được sinh ra.
+
+## Chính sách dữ liệu và artefact
+
+- Commit `data/raw_logs.txt` để Task 1 có input tái lập được.
+- Không commit `data/raw/airline/` hoặc `output/`.
+- Không stage file `tatus`.
+- Bảng runtime Task 2: [`docs/task2_benchmark_results.md`](docs/task2_benchmark_results.md).
+- Biểu đồ write benchmark: [`docs/benchmark_charts/task2_write_benchmark.svg`](docs/benchmark_charts/task2_write_benchmark.svg).

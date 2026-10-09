@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Task 2 Write Benchmark</title>
+  <desc id="desc">Side-by-side horizontal bar charts compare disk storage size and median write execution time for CSV, JSON, Parquet, and ORC.</desc>
+  <rect width="1400" height="760" fill="#f8fafc"/>
+  <text x="700" y="58" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#0f172a">Task 2 Write Benchmark</text>
+  <text x="700" y="88" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#475569">2015 Flight Delays · 5,819,079 rows · 8 input partitions · median of 3 official runs</text>
+
+  <rect x="35" y="120" width="650" height="570" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="360" y="162" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#0f172a">Disk Storage Size</text>
+  <text x="360" y="188" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#64748b">MiB (lower is better)</text>
+
+  <g stroke="#e2e8f0" stroke-width="1">
+    <line x1="180" y1="215" x2="180" y2="585"/>
+    <line x1="292.5" y1="215" x2="292.5" y2="585"/>
+    <line x1="405" y1="215" x2="405" y2="585"/>
+    <line x1="517.5" y1="215" x2="517.5" y2="585"/>
+    <line x1="630" y1="215" x2="630" y2="585"/>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#64748b" text-anchor="middle">
+    <text x="180" y="610">0</text>
+    <text x="292.5" y="610">700</text>
+    <text x="405" y="610">1,400</text>
+    <text x="517.5" y="610">2,100</text>
+    <text x="630" y="610">2,800</text>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#334155" text-anchor="end">
+    <text x="162" y="266">CSV</text>
+    <text x="162" y="356">JSON</text>
+    <text x="162" y="446">Parquet</text>
+    <text x="162" y="536">ORC</text>
+  </g>
+  <rect x="180" y="237" width="90.38" height="40" rx="5" fill="#2563eb"/>
+  <rect x="180" y="327" width="410.03" height="40" rx="5" fill="#f97316"/>
+  <rect x="180" y="417" width="21.68" height="40" rx="5" fill="#16a34a"/>
+  <rect x="180" y="507" width="25.98" height="40" rx="5" fill="#7c3aed"/>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#0f172a">
+    <text x="280" y="263">562.36 MiB</text>
+    <text x="600" y="353">2,551.30 MiB</text>
+    <text x="212" y="443">134.93 MiB</text>
+    <text x="217" y="533">161.63 MiB</text>
+  </g>
+  <text x="405" y="650" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#475569">Disk storage size (MiB)</text>
+
+  <rect x="715" y="120" width="650" height="570" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="1040" y="162" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#0f172a">Median Write Execution Time</text>
+  <text x="1040" y="188" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#64748b">Seconds (lower is better)</text>
+
+  <g stroke="#e2e8f0" stroke-width="1">
+    <line x1="860" y1="215" x2="860" y2="585"/>
+    <line x1="963.85" y1="215" x2="963.85" y2="585"/>
+    <line x1="1067.69" y1="215" x2="1067.69" y2="585"/>
+    <line x1="1171.54" y1="215" x2="1171.54" y2="585"/>
+    <line x1="1275.38" y1="215" x2="1275.38" y2="585"/>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#64748b" text-anchor="middle">
+    <text x="860" y="610">0</text>
+    <text x="963.85" y="610">1.5</text>
+    <text x="1067.69" y="610">3.0</text>
+    <text x="1171.54" y="610">4.5</text>
+    <text x="1275.38" y="610">6.0</text>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#334155" text-anchor="end">
+    <text x="842" y="266">CSV</text>
+    <text x="842" y="356">JSON</text>
+    <text x="842" y="446">Parquet</text>
+    <text x="842" y="536">ORC</text>
+  </g>
+  <rect x="860" y="237" width="288.07" height="40" rx="5" fill="#2563eb"/>
+  <rect x="860" y="327" width="299.84" height="40" rx="5" fill="#f97316"/>
+  <rect x="860" y="417" width="384.51" height="40" rx="5" fill="#16a34a"/>
+  <rect x="860" y="507" width="409.78" height="40" rx="5" fill="#7c3aed"/>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#0f172a">
+    <text x="1158" y="263">4.161 s</text>
+    <text x="1170" y="353">4.331 s</text>
+    <text x="1255" y="443">5.554 s</text>
+    <text x="1280" y="533">5.919 s</text>
+  </g>
+  <text x="1085" y="650" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#475569">Median write execution time (seconds)</text>
+
+  <text x="700" y="728" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#64748b">Verified runtime artefact · local[*] · CSV/JSON uncompressed explicitly; Parquet/ORC Snappy</text>
+</svg>
