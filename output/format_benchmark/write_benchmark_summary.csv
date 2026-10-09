@@ -1,0 +1,5 @@
+format,compression,official_runs,median_write_time_sec,part_file_count,size_bytes,size_mb,output_path
+csv,default / no explicit compression option,3,10.147602399999414,16,589677593,562.3603754043579,C:\BigDataProject\output\format_benchmark\csv
+json,default / no explicit compression option,3,3.2273832999999286,16,2675232631,2551.3006505966187,C:\BigDataProject\output\format_benchmark\json
+parquet,snappy,3,3.036463499999627,16,141519434,134.9634494781494,C:\BigDataProject\output\format_benchmark\parquet
+orc,snappy,3,3.23530269999992,16,169767638,161.9030361175537,C:\BigDataProject\output\format_benchmark\orc

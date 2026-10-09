@@ -24,8 +24,9 @@ import csv
 import os
 import statistics
 import time
+from typing import Any
 
-from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import DataFrame, SparkSession, functions as F
 from pyspark.storagelevel import StorageLevel
 
 # ---------------------------------------------------------------------
@@ -47,35 +48,24 @@ EXPECTED_CARRIER_COUNT = 14
 EXPECTED_NULL_ARRDELAY = 105_071
 
 RESULT_COLUMNS = [
-    "format",
-    "compression",
-    "row_count",
-    "input_partitions",
-    "run_number",
-    "write_time_sec",
-    "part_file_count",
-    "size_bytes",
-    "size_mb",
-    "output_path",
+    "format", "compression", "row_count", "input_partitions", "run_number",
+    "write_time_sec", "part_file_count", "size_bytes", "size_mb", "output_path",
 ]
 
 SUMMARY_COLUMNS = [
-    "format",
-    "compression",
-    "official_runs",
-    "median_write_time_sec",
-    "part_file_count",
-    "size_bytes",
-    "size_mb",
-    "output_path",
+    "format", "compression", "official_runs", "median_write_time_sec",
+    "part_file_count", "size_bytes", "size_mb", "output_path",
 ]
 
 # ---------------------------------------------------------------------
 # Spark and canonical dataset preparation
 # ---------------------------------------------------------------------
 
-def create_spark_session():
-    """Create the SparkSession used for the complete benchmark."""
+def create_spark_session() -> SparkSession:
+    """Create or reuse the SparkSession requested by the benchmark.
+    Returns:
+        A SparkSession with SparkContext logging set to WARN.
+    """
     spark = (
         SparkSession.builder
         .appName("AirlineFileFormatBenchmark")
@@ -86,9 +76,18 @@ def create_spark_session():
 
     spark.sparkContext.setLogLevel("WARN")
     return spark
-
-def load_canonical_dataframe(spark, input_path):
-    """Read flights.csv and apply the four canonical column renames."""
+def load_canonical_dataframe(spark: SparkSession, input_path: str) -> DataFrame:
+    """Read flights.csv and apply the four canonical column renames.
+    Args:
+        spark: Session used to read the source CSV.
+        input_path: Path to the source flights.csv file.
+    Returns:
+        A DataFrame with inferred types and the four renamed columns.
+        This function does not filter rows or impute null values.
+    Notes:
+        Schema inference remains part of input preparation. In main(), it
+        occurs before the timed writes, as does initial materialization.
+    """
     raw_df = (
         spark.read
         .option("header", True)
@@ -105,13 +104,21 @@ def load_canonical_dataframe(spark, input_path):
     )
 
     return canonical_df
-
-def validate_and_materialize(df):
-    """
-    Persist the canonical input with DISK_ONLY, materialize it once,
-    and verify the audited dataset constraints.
+def validate_and_materialize(df: DataFrame) -> tuple[DataFrame, int]:
+    """Materialize the input and check the recorded dataset constraints.
+    Args:
+        df: Canonical DataFrame containing the columns used by the checks.
+    Returns:
+        The persisted DataFrame and its materialized row count.
+    Raises:
+        AssertionError: A checked constraint fails when assertions are enabled.
+    Notes:
+        DISK_ONLY keeps input preparation outside the write timer, but each write still accesses persisted input. OS file cache state is not
+        controlled, so this is not an encoding-only measurement. These checks cover selected counts, ranges, and the ArrDelay type;
+        they do not establish full schema conformance or full row equality.
     """
     benchmark_df = df.persist(StorageLevel.DISK_ONLY)
+    # Force initial input evaluation before any write measurement starts.
     row_count = benchmark_df.count()
 
     validation = (
@@ -124,9 +131,7 @@ def validate_and_materialize(df):
             F.max("Month").alias("max_month"),
             F.countDistinct("Month").alias("distinct_months"),
             F.countDistinct("Carrier").alias("distinct_carriers"),
-            F.sum(
-                F.col("ArrDelay").isNull().cast("int")
-            ).alias("null_arrdelay"),
+            F.sum(F.col("ArrDelay").isNull().cast("int")).alias("null_arrdelay"),
         )
         .first()
     )
@@ -141,12 +146,7 @@ def validate_and_materialize(df):
     assert validation["distinct_months"] == EXPECTED_MONTH_COUNT
     assert validation["distinct_carriers"] == EXPECTED_CARRIER_COUNT
     assert validation["null_arrdelay"] == EXPECTED_NULL_ARRDELAY
-    assert dict(benchmark_df.dtypes)["ArrDelay"] in [
-        "int",
-        "bigint",
-        "float",
-        "double",
-    ]
+    assert dict(benchmark_df.dtypes)["ArrDelay"] in ["int", "bigint", "float", "double"]
 
     print("=" * 70)
     print("CANONICAL BENCHMARK INPUT")
@@ -165,27 +165,48 @@ def validate_and_materialize(df):
 # ---------------------------------------------------------------------
 # Benchmark configuration and helper functions
 # ---------------------------------------------------------------------
-
-def get_compression_policy(spark):
-    """Record the active compression configuration used by Spark."""
+def get_compression_policy(spark: SparkSession) -> dict[str, str]:
+    """Describe the compression settings used by the current session.
+    Args:
+        spark: Session whose Parquet and ORC codec settings are recorded.
+    Returns:
+        Policy labels by format. CSV and JSON have no explicit codec option;
+        Parquet and ORC values come from the active Spark configuration.
+    Notes:
+        This function records settings without changing them. The benchmark
+        compares these format-and-codec combinations, not codec-free formats.
+    """
     return {
         "csv": "default / no explicit compression option",
         "json": "default / no explicit compression option",
         "parquet": spark.conf.get("spark.sql.parquet.compression.codec"),
         "orc": spark.conf.get("spark.sql.orc.compression.codec"),
     }
-
-def get_write_options():
-    """Return only the write options intentionally controlled by the benchmark."""
+def get_write_options() -> dict[str, dict[str, str]]:
+    """Return the per-format writer options controlled by the benchmark.
+    Returns:
+        A format-to-options mapping. Only the CSV header option is set;
+        compression is not overridden through these writer options.
+    """
     return {
         "csv": {"header": "true"},
         "json": {},
         "parquet": {},
         "orc": {},
     }
-
-def timed_write(df, fmt, output_path, write_options):
-    """Write one format once and return the elapsed Write Execution Time."""
+def timed_write(df: DataFrame, fmt: str, output_path: str, write_options: dict[str, dict[str, str]]) -> float:
+    """Write one format in overwrite mode and measure elapsed seconds.
+    Args:
+        df: Input DataFrame for the write action.
+        fmt: Spark file format and key in write_options.
+        output_path: Destination directory for this format.
+        write_options: Writer options grouped by format.
+    Returns:
+        Elapsed perf_counter time around writer.format(fmt).save(output_path).
+    Notes:
+        Writer option setup is outside the timer. The measured action includes input access and Spark's write work; it is not isolated encoding time.
+        Output size measurement and caller-side logging happen separately.
+    """
     writer = df.write.mode("overwrite")
 
     for key, value in write_options[fmt].items():
@@ -196,9 +217,16 @@ def timed_write(df, fmt, output_path, write_options):
     end_time = time.perf_counter()
 
     return end_time - start_time
-
-def get_output_size(output_path):
-    """Return the count and total size of Spark part-* data files."""
+def get_output_size(output_path: str) -> dict[str, int | float]:
+    """Count Spark part-* files and sum their file lengths recursively.
+    Args:
+        output_path: Local filesystem directory to scan with os.walk.
+    Returns:
+        part_file_count, size_bytes, and the legacy size_mb field. The latter is calculated in MiB using 1024**2 bytes per unit.
+    Notes:
+        Files such as _SUCCESS and .*.crc are excluded by the part- prefix rule. Metadata embedded inside a part file remains included.
+        File lengths measure logical bytes, not allocated filesystem blocks. This helper does not validate path existence or dataset contents.
+    """
     total_bytes = 0
     part_file_count = 0
 
@@ -218,34 +246,32 @@ def get_output_size(output_path):
 # ---------------------------------------------------------------------
 # Main write benchmark function
 # ---------------------------------------------------------------------
-
-def run_write_benchmark(df, output_path):
-    """
-    Run the complete four-format write benchmark.
-
-    Parameters
-    ----------
-    df:
-        The already validated and materialized canonical Spark DataFrame.
-    output_path:
-        Root directory for CSV, JSON, Parquet, and ORC outputs.
-
-    Returns
-    -------
-    tuple
-        (benchmark_results, benchmark_summary, output_paths)
+def run_write_benchmark(df: DataFrame, output_path: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    """Run the four-format write protocol on prepared input.
+    Args:
+        df: Already validated and materialized canonical Spark DataFrame.
+            The caller is responsible for persistence and eventual cleanup.
+        output_path: Root directory for CSV, JSON, Parquet, and ORC outputs.
+    Returns:
+        A tuple containing official run records, per-format summary records,
+        and the format-to-output-directory mapping.
+    Notes:
+        The protocol runs one warm-up round followed by OFFICIAL_RUNS rounds
+        in FORMATS order. Each write overwrites its format directory.
+        Warm-up timings are discarded. Only write times are aggregated using
+        the median; summary sizes and file counts come from the final run.
+        Record-count and positive-size checks use assertions. Size consistency
+        across runs is printed for inspection, not enforced by an assertion.
     """
     spark = df.sparkSession
 
     compression_policy = get_compression_policy(spark)
     write_options = get_write_options()
 
-    output_paths = {
-        fmt: os.path.join(output_path, fmt)
-        for fmt in FORMATS
-    }
+    output_paths = {fmt: os.path.join(output_path, fmt) for fmt in FORMATS}
     os.makedirs(output_path, exist_ok=True)
 
+    # Input metadata collection is outside all timed write calls.
     input_partitions = df.rdd.getNumPartitions()
     row_count = df.count()
 
@@ -269,12 +295,7 @@ def run_write_benchmark(df, output_path):
 
     for fmt in FORMATS:
         print(f"Writing {fmt.upper()}...")
-        timed_write(
-            df,
-            fmt,
-            output_paths[fmt],
-            write_options,
-        )
+        timed_write(df, fmt, output_paths[fmt], write_options)
         print(f"{fmt.upper()} warm-up completed.")
 
     # Run three official rounds in a fixed format order.
@@ -287,14 +308,8 @@ def run_write_benchmark(df, output_path):
 
         for fmt in FORMATS:
             output_dir = output_paths[fmt]
-
-            write_time = timed_write(
-                df,
-                fmt,
-                output_dir,
-                write_options,
-            )
-
+            write_time = timed_write(df, fmt, output_dir, write_options)
+            # Scan output files only after the write timer has stopped.
             size_info = get_output_size(output_dir)
 
             result = {
@@ -323,18 +338,11 @@ def run_write_benchmark(df, output_path):
     assert len(benchmark_results) == len(FORMATS) * OFFICIAL_RUNS
 
     for fmt in FORMATS:
-        format_results = [
-            result
-            for result in benchmark_results
-            if result["format"] == fmt
-        ]
+        format_results = [result for result in benchmark_results if result["format"] == fmt]
 
         assert len(format_results) == OFFICIAL_RUNS
         assert all(r["row_count"] == row_count for r in format_results)
-        assert all(
-            r["input_partitions"] == input_partitions
-            for r in format_results
-        )
+        assert all(r["input_partitions"] == input_partitions for r in format_results)
         assert all(r["part_file_count"] > 0 for r in format_results)
         assert all(r["size_bytes"] > 0 for r in format_results)
 
@@ -350,21 +358,10 @@ def run_write_benchmark(df, output_path):
     benchmark_summary = []
 
     for fmt in FORMATS:
-        format_results = [
-            result
-            for result in benchmark_results
-            if result["format"] == fmt
-        ]
-
-        write_times = [
-            result["write_time_sec"]
-            for result in format_results
-        ]
-
-        final_run = max(
-            format_results,
-            key=lambda result: result["run_number"],
-        )
+        format_results = [result for result in benchmark_results if result["format"] == fmt]
+        write_times = [result["write_time_sec"] for result in format_results]
+        # The final run describes the files left in the overwrite directory.
+        final_run = max(format_results, key=lambda result: result["run_number"])
 
         benchmark_summary.append({
             "format": fmt,
@@ -382,50 +379,43 @@ def run_write_benchmark(df, output_path):
 # ---------------------------------------------------------------------
 # Result export
 # ---------------------------------------------------------------------
+def save_results(
+    benchmark_results: list[dict[str, Any]],
+    benchmark_summary: list[dict[str, Any]], output_root: str,
+) -> tuple[str, str]:
+    """Write official run records and summary records to the existing CSVs.
+    Args:
+        benchmark_results: Official run records matching RESULT_COLUMNS.
+        benchmark_summary: Per-format summary records matching SUMMARY_COLUMNS.
+        output_root: Existing destination directory created by the benchmark.
+    Returns:
+        Paths to write_benchmark_runs.csv and write_benchmark_summary.csv.
+    Notes:
+        Existing result CSVs are overwritten. This export occurs after the
+        benchmark measurements and preserves the existing CSV column names.
+    """
+    detailed_results_path = os.path.join(output_root, "write_benchmark_runs.csv")
 
-def save_results(benchmark_results, benchmark_summary, output_root):
-    """Save detailed official runs and the final four-format summary."""
-    detailed_results_path = os.path.join(
-        output_root,
-        "write_benchmark_runs.csv",
-    )
-
-    with open(
-        detailed_results_path,
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=RESULT_COLUMNS,
-        )
+    with open(detailed_results_path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=RESULT_COLUMNS)
         writer.writeheader()
         writer.writerows(benchmark_results)
 
-    summary_path = os.path.join(
-        output_root,
-        "write_benchmark_summary.csv",
-    )
+    summary_path = os.path.join(output_root, "write_benchmark_summary.csv")
 
-    with open(
-        summary_path,
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=SUMMARY_COLUMNS,
-        )
+    with open(summary_path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=SUMMARY_COLUMNS)
         writer.writeheader()
         writer.writerows(benchmark_summary)
 
     return detailed_results_path, summary_path
-
-
-def print_summary(benchmark_summary):
-    """Display the final canonical benchmark summary."""
+def print_summary(benchmark_summary: list[dict[str, Any]]) -> None:
+    """Print the supplied summary without recomputing benchmark statistics.
+    Args:
+        benchmark_summary: Per-format records returned by run_write_benchmark.
+    Notes:
+        The existing MB display label is retained; size_mb values are MiB.
+    """
     print("\n" + "=" * 70)
     print("FINAL WRITE BENCHMARK SUMMARY")
     print("=" * 70)
@@ -442,62 +432,44 @@ def print_summary(benchmark_summary):
 # ---------------------------------------------------------------------
 # Command-line entry point
 # ---------------------------------------------------------------------
-
-def parse_args():
-    """Parse command-line paths while keeping the project defaults."""
-    parser = argparse.ArgumentParser(
-        description="Benchmark Airline data across CSV, JSON, Parquet, and ORC."
-    )
-
+def parse_args() -> argparse.Namespace:
+    """Parse command-line paths while keeping the project defaults.
+    Returns:
+        Parsed input_path and output_path arguments.
+    """
+    parser = argparse.ArgumentParser(description="Benchmark Airline data across CSV, JSON, Parquet, and ORC.")
     parser.add_argument(
         "--input-path",
         default=r"C:\BigDataProject\data\raw\airline\flights.csv",
         help="Path to the source flights.csv file.",
     )
-
     parser.add_argument(
         "--output-path",
         default=r"C:\BigDataProject\output\format_benchmark",
         help="Root directory for benchmark outputs.",
     )
-
     return parser.parse_args()
-
-
-def main():
-    """Execute the complete ID3 write benchmark workflow."""
+def main() -> None:
+    """Execute input preparation, timed writes, and result export from the CLI.
+    Raises:
+        FileNotFoundError: The requested input path is not a local file.
+    Notes:
+        The existing finally block releases the assigned benchmark DataFrame
+        and stops the SparkSession when leaving the benchmark try block.
+    """
     args = parse_args()
 
     if not os.path.isfile(args.input_path):
-        raise FileNotFoundError(
-            f"Input dataset not found: {args.input_path}"
-        )
+        raise FileNotFoundError(f"Input dataset not found: {args.input_path}")
 
     spark = create_spark_session()
     benchmark_df = None
 
     try:
-        canonical_df = load_canonical_dataframe(
-            spark,
-            args.input_path,
-        )
-
-        benchmark_df, _ = validate_and_materialize(
-            canonical_df
-        )
-
-        benchmark_results, benchmark_summary, output_paths = (
-            run_write_benchmark(
-                benchmark_df,
-                args.output_path,
-            )
-        )
-
-        detailed_results_path, summary_path = save_results(
-            benchmark_results,
-            benchmark_summary,
-            args.output_path,
-        )
+        canonical_df = load_canonical_dataframe(spark, args.input_path)
+        benchmark_df, _ = validate_and_materialize(canonical_df)
+        benchmark_results, benchmark_summary, output_paths = (run_write_benchmark(benchmark_df, args.output_path))
+        detailed_results_path, summary_path = save_results(benchmark_results, benchmark_summary, args.output_path)
 
         print_summary(benchmark_summary)
 
@@ -509,10 +481,7 @@ def main():
 
         print("\nCanonical outputs for ID4:")
         for fmt in FORMATS:
-            print(
-                f"{fmt.upper():8} -> "
-                f"{output_paths[fmt]}"
-            )
+            print(f"{fmt.upper():8} -> {output_paths[fmt]}")
 
     finally:
         if benchmark_df is not None:

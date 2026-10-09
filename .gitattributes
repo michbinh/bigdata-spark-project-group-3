@@ -8,3 +8,7 @@
 
 # Dataset demo phải giống byte giữa các máy
 data/raw_logs.txt text eol=lf
+
+# Preserve the exact bytes of the selected P0 result files.
+output/format_benchmark/write_benchmark_runs.csv -text
+output/format_benchmark/write_benchmark_summary.csv -text

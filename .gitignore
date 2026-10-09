@@ -10,7 +10,22 @@ venv/
 .DS_Store
 
 # Spark generated outputs and metadata
-output/
+# Allow only the selected ID3 report artifacts.
+/output/*
+!/output/figures/
+!/output/format_benchmark/
+
+# Keep the four report figures.
+/output/figures/*
+!/output/figures/storage_size.png
+!/output/figures/median_write_time.png
+!/output/figures/storage_write_tradeoff.png
+!/output/figures/official_run_write_times.png
+
+# Keep the two selected benchmark result files.
+/output/format_benchmark/*
+!/output/format_benchmark/write_benchmark_runs.csv
+!/output/format_benchmark/write_benchmark_summary.csv
 benchmark_output/
 spark-warehouse/
 metastore_db/
