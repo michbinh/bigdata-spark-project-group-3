@@ -1,85 +1,257 @@
 # Big Data Spark Project — Group 3
 
-## Mục tiêu project
+## Project Overview
 
-Nhóm xây dựng một mini Spark project theo toàn bộ quy trình:
+This project demonstrates an end-to-end Apache Spark workflow built around two complementary tasks:
+
+- **Task 1 — Low-level RDD processing:** generate reproducible web access logs, parse and validate them with the RDD API, enrich valid records through a broadcast lookup, count malformed records with an accumulator, aggregate access counts by country, and produce the Top 10 Countries result.
+- **Task 2 — File-format and partition benchmarking:** download the USDOT Flight Delays dataset, compare CSV, JSON, Parquet, and ORC for write time, read time, storage size, and output-file count, and demonstrate partition-control operations.
+
+The complete workflow is:
 
 ```text
-Tạo log mẫu → xử lý log bằng RDD → Top 10 Countries
-→ đóng gói spark-submit → benchmark định dạng file/partition
-→ report → QA → slide và live demo
+Environment preflight
+        |
+        v
+Generate and self-check web logs
+        |
+        v
+Task 1: RDD parse -> validate -> enrich -> aggregate -> Top 10 Countries
+        |
+        v
+Download and extract the airline dataset
+        |
+        v
+Task 2: format benchmark -> partition experiments -> result artefacts
+        |
+        v
+Tests, report, charts, Spark UI inspection, and live demonstration
 ```
 
-## Cấu trúc repo: up file vào đâu?
+## Repository Structure
 
 ```text
 .
-├── data/                       # Input mẫu nhỏ, CÓ commit
-│   └── raw_logs.txt             # ID2 tạo để Task 1 chạy lại được
-├── src/                        # Toàn bộ source code Python
-│   ├── generate_logs.py         # ID2
-│   ├── rdd_processing.py        # ID1 + ID2
-│   ├── format_benchmark.py      # ID3 + ID4
-│   ├── main.py                  # ID5
-│   └── utils.py                 # ID5 / helper dùng chung
-├── tests/                       # Test nhỏ hoặc smoke test có thể chạy lại
-├── docs/                        # Ảnh, sơ đồ, kết quả bảng/chart xuất ra dạng ảnh
-├── REPORT.md                    # Báo cáo chung; mỗi người chỉ sửa section của mình
-├── requirements.txt             # Danh sách thư viện cần cài
-├── submit_job.sh                # Lệnh chạy Spark của ID5
-├── .gitignore                   # Không up output nặng / log Spark
-├── output/                      # Không commit
-├── benchmark_output/            # Không commit
-├── logs/                        # Không commit
-└── checkpoints/                 # Không commit
+├── data/
+│   ├── raw_logs.txt                  # Small reproducible input for Task 1; committed
+│   └── raw/airline/flights.csv       # Large Task 2 input; generated locally, not committed
+├── src/
+│   ├── generate_logs.py              # Reproducible web-log generator and self-check
+│   ├── rdd_processing.py             # Parser, RDD transformations, and aggregation
+│   ├── format_benchmark.py           # Format and partition benchmark workflow
+│   ├── main.py                       # Spark application entry point
+│   └── utils.py                      # Shared runtime and path helpers
+├── tests/                            # Unit and smoke tests
+├── docs/                             # Diagrams, benchmark tables, and charts
+├── REPORT.md                         # Technical report
+├── requirements.txt                  # Python dependencies
+├── submit_job.sh                     # Reproducible spark-submit wrapper
+├── .gitignore                        # Excludes large and generated artefacts
+└── output/                           # Generated Task 1 and Task 2 outputs; not committed
 ```
 
-> Không commit: dataset benchmark lớn, CSV/JSON/Parquet/ORC sinh ra, Spark warehouse, logs, checkpoints hoặc file chứa mật khẩu/API key.
+Do not commit the airline dataset, generated CSV/JSON/Parquet/ORC directories, Spark warehouse data, runtime logs, checkpoints, credentials, passwords, or API keys.
 
-## Phân công, output và nơi up
-## Phân công, output và nơi up
+## Runtime Requirements
 
-| ID | Công việc | Output bắt buộc | Vị trí upload | Branch |
-| --- | --- | --- | --- | --- |
-| **ID1** | Parser RDD: đọc log, parse, filter, Pair RDD, `reduceByKey` | `rdd_processing.py`; lý thuyết RDD + RDD vs DataFrame | `src/`; mục 2.1-2.2 trong `REPORT.md`; sơ đồ vào `docs/` | `feature/id1-rdd-core` |
-| **ID2** | Tạo log; Broadcast IP -> Country; Accumulator log lỗi | `generate_logs.py`, `raw_logs.txt`; phần Shared Variables | `src/`, `data/`, mục 2.3 trong `REPORT.md` | `feature/id2-shared-vars` |
-| **ID3** | Ghi CSV/JSON/Parquet/ORC, đo size và write time | `format_benchmark.py`; bảng/biểu đồ write benchmark | `src/`; bảng/chart vào `docs/`; mục 4.1-4.2 trong `REPORT.md` | `feature/id3-format-write` |
-| **ID4** | Read benchmark; `repartition`, `coalesce`, `partitionBy` | Phần đọc/partition trong `format_benchmark.py`; bảng/chart | `src/`; bảng/chart vào `docs/`; mục 4.3 trong `REPORT.md` | `feature/id4-partition-benchmark` |
-| **ID5** | Architecture + triển khai Spark | `main.py`, `utils.py`, `submit_job.sh`; sơ đồ kiến trúc | `src/`, root repo, `docs/`; mục 3 trong `REPORT.md` | `feature/id5-deployment` |
-| **ID6 - Gia Minh** | Git Master, report editor, Debugging/Performance | Repo sạch, report ghép hoàn chỉnh; phần Skew/GC/OOM | `README.md`, `.gitignore`, `REPORT.md`, `docs/` | `docs/id6-report-git-governance` |
-| **ID7** | QA clean-clone, slide và live demo | `Presentation_Slides.pptx`, demo script, ảnh/video backup | `docs/`; báo lỗi qua Issue/PR comment | `feature/id7-demo-qa` |
-## Quy tắc Git
+The verified development environment uses:
 
-1. Chỉ làm trên branch của mình; **không push trực tiếp vào `main`**.
-2. Trước khi làm, cập nhật branch từ `main`.
-3. Khi xong một phần: `git add .` → `git commit -m "..."` → `git push`.
-4. Tạo Pull Request từ branch của mình vào `main`; mô tả file đổi, lệnh chạy, output mong đợi và limitation.
-5. ID6 review/merge. Nếu có conflict hoặc thay đổi input/schema, báo owner liên quan trước khi merge.
+- Python 3.11.x
+- PySpark 3.5.6
+- Apache Spark 3.5.6
+- Java 8 (`1.8.0_502` in the verified Windows environment)
+- Git Bash for running `submit_job.sh` on Windows
 
-## Commit message mẫu
+The `spark-submit` executable and the installed PySpark package must use compatible Spark versions. Do not mix a standalone Spark 3.4.1 installation with PySpark 3.5.6. If `spark-submit --version` reports the wrong release, update `PATH` or `SPARK_HOME` before running the project.
+
+From the repository root, install the Python dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Run the following preflight checks in PowerShell:
+
+```powershell
+python --version
+python -c "import sys, pyspark; from pyspark.sql import SparkSession; print(sys.executable); print('PySpark:', pyspark.__version__); print('SparkSession import: OK')"
+spark-submit --version
+java -version
+$env:JAVA_HOME
+Test-Path .\data\raw_logs.txt
+& "C:\Program Files\Git\bin\bash.exe" --version
+```
+
+Proceed only after Python, PySpark, Spark, Java, the Task 1 input path, and Git Bash are available as expected.
+
+## End-to-End Execution Flow
+
+### Step 1 — Generate the Task 1 input
+
+Run the log generator from the repository root:
+
+```powershell
+python .\src\generate_logs.py
+```
+
+The generator uses a fixed default seed and writes `data/raw_logs.txt`. It creates 10,000 shuffled records with an exact 90/10 split: 9,000 valid records and 1,000 intentionally malformed records. The malformed records are divided across four mutually exclusive categories: `missing_field`, `invalid_ipv4`, `non_numeric_status`, and `malformed_request`.
+
+Before writing the file, the generator performs a self-check. It verifies the total number of records, the expected count for each category, the valid status-code range, and lookup coverage for all syntactically valid IP prefixes. This makes the input reproducible and validates the assumptions used by the Spark pipeline.
+
+The committed `data/raw_logs.txt` allows Task 1 to run immediately after a clean clone. Regenerate it only when the input must be reproduced or when generator behaviour is being tested.
+
+### Step 2 — Validate the Task 1 pipeline
+
+Run the unit tests before launching Spark:
+
+```powershell
+python -m unittest discover -s tests -p "test_top10_pipeline.py" -v
+```
+
+The tests validate the parser and Top 10 aggregation behaviour independently of the full deployment wrapper. A failing test should be resolved before the end-to-end job is used for a demonstration.
+
+### Step 3 — Submit Task 1
+
+Run Task 1 through the deployment wrapper:
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task1'
+```
+
+Running `./submit_job.sh` without `--task` also uses Task 1 as the default workflow:
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh'
+```
+
+The execution sequence is:
+
+1. `submit_job.sh` resolves repository-relative paths and invokes `spark-submit` with `src/main.py` as the application entry point.
+2. `main.py` creates the Spark session and selects the Task 1 workflow.
+3. `SparkContext.textFile()` loads `data/raw_logs.txt` as an RDD of raw text records.
+4. `flatMap()` normalises physical input records into logical log lines.
+5. `map()` calls the custom parser for every line. Valid rows become structured records; malformed rows become `None`. The accumulator is incremented when parsing rejects a record.
+6. `filter()` removes `None`, leaving only valid parsed records. The parsed RDD is cached and materialised so later actions do not unnecessarily repeat parsing and accumulator updates.
+7. A broadcast variable distributes the IP-prefix-to-country lookup map once per executor. Each valid record is enriched with its country through the broadcast value.
+8. The enriched RDD is mapped to `(country, 1)` pairs. `reduceByKey()` aggregates access counts and introduces the workflow's shuffle boundary.
+9. `takeOrdered(10)` selects the ten countries with the highest access counts, using the country name as a deterministic tie-breaker.
+10. The small Top 10 result is converted to a DataFrame for presentation and output. The application reports the malformed-record count and writes the country ranking to the configured Task 1 output location.
+11. The Spark session is stopped after the result has been displayed and written.
+
+To keep the application alive for Spark UI inspection after computation finishes, run:
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task1 --keep-ui-seconds 90'
+```
+
+Spark UI is normally available at <http://localhost:4040> while the Spark application is alive. The 90-second hold is for inspection only and is not part of benchmark timing.
+
+### Step 4 — Download the Task 2 dataset
+
+Task 2 uses the Kaggle USDOT Flight Delays dataset. Download and extract only the required `flights.csv` file:
+
+```powershell
+python .\src\format_benchmark.py --download-only
+```
+
+The default input path after extraction is:
+
+```text
+data/raw/airline/flights.csv
+```
+
+The source dataset is approximately 500 MB, while generated multi-format outputs require substantially more space. Keep at least 10 GB of free disk space before running the full benchmark. The downloaded dataset is local input and must not be committed.
+
+### Step 5 — Run the Task 2 format benchmark
+
+The benchmark can be executed directly:
+
+```powershell
+python .\src\format_benchmark.py
+```
+
+It can also be launched through the same Spark deployment wrapper used by Task 1:
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task2'
+```
+
+The Task 2 workflow performs the following operations:
+
+1. The script resolves the default airline input and output directories relative to the repository root.
+2. Spark reads `flights.csv` and prepares the DataFrame used consistently across all format measurements.
+3. The DataFrame is written to CSV, JSON, Parquet with Snappy compression, and ORC with Snappy compression.
+4. Each write records elapsed time, output file count, total directory size, and average part-file size.
+5. Every generated format is read back in a separate measurement, and an action is triggered so the reported duration represents actual Spark execution rather than lazy plan construction.
+6. Repeated measurements are summarised using the median to reduce sensitivity to one-off runtime variation.
+7. Partition experiments demonstrate how `repartition`, `coalesce`, and partition-aware writes affect parallelism, shuffle cost, file count, and average file size.
+8. Benchmark outputs are written with `overwrite` mode to the generated output directories, so rerunning Task 2 replaces prior benchmark artefacts in those locations.
+
+The default output locations are:
+
+```text
+output/format_benchmark/     # CSV, JSON, Parquet, and ORC benchmark outputs
+output/partition_test/       # Partition-control experiment outputs
+```
+
+For Spark UI inspection during Task 2, use:
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task2 --keep-ui-seconds 90'
+```
+
+When interpreting the UI, distinguish Spark jobs, stages, and tasks. Actions create jobs; shuffle boundaries separate stages; and each stage launches tasks over its partitions.
+
+### Step 6 — Verify generated results and documentation
+
+After both tasks complete, verify that:
+
+- Task 1 reports exactly 9,000 valid records and 1,000 malformed records for the default generated input.
+- The Top 10 Countries output is present and ordered by descending access count.
+- Task 2 produced readable CSV, JSON, Parquet, and ORC directories.
+- File counts, directory sizes, and benchmark timings were recorded for every format.
+- Partition experiment outputs exist under `output/partition_test`.
+- The runtime table and chart match the latest benchmark run.
+
+The documented Task 2 results are stored in:
+
+- [`docs/task2_benchmark_results.md`](docs/task2_benchmark_results.md)
+- [`docs/benchmark_charts/task2_write_benchmark.svg`](docs/benchmark_charts/task2_write_benchmark.svg)
+
+## Quick Run Reference
+
+From a clean clone on the verified Windows setup:
+
+```powershell
+pip install -r requirements.txt
+python .\src\generate_logs.py
+python -m unittest discover -s tests -p "test_top10_pipeline.py" -v
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task1'
+python .\src\format_benchmark.py --download-only
+& "C:\Program Files\Git\bin\bash.exe" -lc './submit_job.sh --task task2'
+```
+
+## Data and Artefact Policy
+
+- Commit `data/raw_logs.txt` because it is the small reproducible Task 1 input.
+- Do not commit `data/raw/airline/`, `output/`, `benchmark_output/`, runtime `logs/`, or `checkpoints/`.
+- Do not stage accidental files such as `tatus`.
+- Do not commit Spark warehouse data, generated benchmark formats, credentials, or machine-specific runtime files.
+
+## Git Workflow
+
+Work on a feature branch and do not push directly to `main`. Update the feature branch from `main` before starting, commit a coherent change, push the branch, and open a Pull Request. The Pull Request should identify changed files, execution commands, expected outputs, and known limitations.
+
+Example commit messages:
 
 ```text
 feat(rdd): add regex log parser
 feat(shared-vars): add invalid log accumulator
 feat(benchmark): add parquet write measurement
-docs(report): add RDD lineage explanation
+docs(readme): document end-to-end execution flow
 fix(deployment): use relative input path
 ```
 
-## Contract Phase 1 — cần thống nhất trước khi ghép
+## Technical Report
 
-1. **ID2** tạo và commit `src/generate_logs.py` cùng `data/raw_logs.txt` (90% valid, 10% malformed).
-2. ID2 ghi rõ format mỗi dòng log và các loại lỗi được tạo.
-3. **ID1** parse ra schema thống nhất: `ip`, `timestamp`, `method`, `endpoint`, `status_code`.
-4. ID1 + ID2 chỉ ghép Broadcast/Accumulator sau khi thống nhất schema.
-5. Output Task 1 cuối cùng phải in được: **Top 10 Countries** và **invalid log count**.
-
-## Cách chạy sau này
-
-```bash
-pip install -r requirements.txt
-python src/generate_logs.py
-bash submit_job.sh
-```
-
-> Lệnh chính xác sẽ được ID5 cập nhật khi `main.py` và `submit_job.sh` hoàn thành.
+Detailed explanations of RDD lineage, lazy evaluation, fault tolerance, shared variables, Spark deployment, file formats, partition control, measured results, and limitations are available in [`REPORT.md`](REPORT.md).
