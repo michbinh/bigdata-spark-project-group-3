@@ -1,71 +1,71 @@
-"""Sinh dữ liệu log truy cập web giả lập cho pipeline Spark (Task 2.2 - ID2).
+"""Generate synthetic web access logs for the Spark pipeline (Task 2.2 - ID2).
 
 ================================================================================
-ĐỊNH DẠNG LOG (hợp đồng dùng chung với core parser của ID1 trong
-``rdd_processing.py``). Mỗi bản ghi là MỘT dòng theo Combined Log Format:
+LOG FORMAT (the shared contract with ID1's core parser in
+``rdd_processing.py``). Each record occupies ONE line in Combined Log Format:
 
     <ip> <ident> <authuser> [<timestamp>] "<method> <endpoint> HTTP/<ver>" <status> <bytes> "<referer>" "<user_agent>"
 
-Ví dụ một dòng hợp lệ đầy đủ::
+Example of a complete valid line::
 
     192.168.10.24 - - [10/Oct/2000:13:55:36 +0700] "GET /products?id=7 HTTP/1.1" 200 1234 "https://example.com/" "Mozilla/5.0"
 
-Ví dụ một dòng hợp lệ dạng rút gọn (Common Log Format - bỏ 2 trường cuối)::
+Example of a shortened valid line (Common Log Format - last two fields omitted)::
 
     192.168.10.24 - - [10/Oct/2000:13:55:36 +0700] "GET /products?id=7 HTTP/1.1" 200 1234
 
-Quy ước từng trường:
+Field conventions:
 
 ===============  ============================================================
-Trường           Mô tả
+Field            Description
 ===============  ============================================================
-``ip``           Địa chỉ IPv4 dạng dotted-quad. Đây là khóa để tra cứu quốc gia.
-``ident``        Luôn là ``-`` (không dùng identd).
-``authuser``     Luôn là ``-`` (không có HTTP auth).
-``timestamp``    Bọc trong ``[]``, dạng ``dd/Mon/yyyy:HH:MM:SS +0700``.
-                 Tên tháng viết tiếng Anh 3 ký tự, KHÔNG phụ thuộc locale.
-``request``      Bọc trong ``""``, gồm đúng 3 phần cách nhau bởi khoảng trắng:
-                 method viết HOA (``[A-Z]+``), endpoint không chứa khoảng
-                 trắng, và phiên bản ``HTTP/<major>[.<minor>]``.
-``status``       Số nguyên HTTP status, nằm trong khoảng 100..599.
-``bytes``        Số nguyên, kích thước response tính theo byte.
-``referer``      Tùy chọn, bọc trong ``""``.
-``user_agent``   Tùy chọn, bọc trong ``""``. Nếu có ``referer`` thì phải có
-                 ``user_agent`` và ngược lại - hai trường này đi theo cặp.
+``ip``           Dotted-quad IPv4 address. This is the country lookup key.
+``ident``        Always ``-`` (identd is not used).
+``authuser``     Always ``-`` (no HTTP authentication).
+``timestamp``    Enclosed in ``[]`` using ``dd/Mon/yyyy:HH:MM:SS +0700``.
+                 Month names use three English letters and are locale-independent.
+``request``      Enclosed in ``""`` and contains exactly three space-separated
+                 parts: an uppercase method (``[A-Z]+``), an endpoint without
+                 spaces, and the version ``HTTP/<major>[.<minor>]``.
+``status``       Integer HTTP status code in the range 100..599.
+``bytes``        Integer response size in bytes.
+``referer``      Optional and enclosed in ``""``.
+``user_agent``   Optional and enclosed in ``""``. ``referer`` and
+                 ``user_agent`` must either both be present or both be absent.
 ===============  ============================================================
 
-Dấu phân cách giữa các trường là khoảng trắng. Các trường ``timestamp``,
-``request``, ``referer``, ``user_agent`` có thể chứa khoảng trắng bên trong nên
-được bao bởi ``[]`` hoặc ``""`` để vẫn tách được.
+Fields are separated by spaces. The ``timestamp``, ``request``, ``referer``,
+and ``user_agent`` fields may contain internal spaces, so they are enclosed in
+``[]`` or ``""`` to remain distinguishable.
 
 ================================================================================
-TỈ LỆ SINH: đúng 90% bản ghi hợp lệ / 10% bản ghi lỗi. Con số được chia CỐ ĐỊNH
-(không ngẫu nhiên) nên tỉ lệ luôn chính xác tuyệt đối, không phụ thuộc seed.
-Phần 10% lỗi chia đều cho 4 loại trong taxonomy bên dưới.
+GENERATION RATIO: exactly 90% valid records and 10% malformed records. Counts
+are allocated DETERMINISTICALLY rather than randomly, so the ratio remains exact
+regardless of the seed. The malformed 10% is split evenly among the four types below.
 
-TAXONOMY BẢN GHI LỖI (canonical - CÓ THỨ TỰ ƯU TIÊN, mutually exclusive).
-Mỗi bản ghi lỗi được phân loại bằng cách kiểm tra theo đúng thứ tự sau và dừng
-ở loại ĐẦU TIÊN khớp:
+MALFORMED-RECORD TAXONOMY (canonical, ORDERED BY PRIORITY, and mutually exclusive).
+Each malformed record is classified by checking the following sequence and
+stopping at the FIRST matching category:
 
-    1. ``missing_field``      - Thiếu trường: số trường tách được ít hơn schema.
-    2. ``invalid_ipv4``       - Đủ trường, nhưng trường IP không đúng IPv4.
-    3. ``non_numeric_status`` - Đủ trường, IP hợp lệ, status không parse được
-                                thành số nguyên.
-    4. ``malformed_request``  - Đủ trường, IP hợp lệ, status hợp lệ, nhưng
-                                method/endpoint/phiên bản HTTP sai cấu trúc.
+    1. ``missing_field``      - Too few fields are available for the schema.
+    2. ``invalid_ipv4``       - All fields exist, but the IP is not valid IPv4.
+    3. ``non_numeric_status`` - All fields and the IP are valid, but the status
+                                cannot be parsed as an integer.
+    4. ``malformed_request``  - Fields, IP, and status are valid, but the
+                                method, endpoint, or HTTP version is malformed.
 
-Bản ghi lỗi được sinh ra CÓ CHỦ ĐÍCH và không được "làm sạch" - chúng là đầu
-vào để kiểm chứng Accumulator đếm bản ghi hỏng ở Task 2.4.
+Malformed records are generated INTENTIONALLY and must not be cleaned. They are
+inputs used to verify the malformed-record accumulator in Task 2.4.
 
 ================================================================================
-CÁCH CHẠY - từ thư mục gốc của repo, không cần tham số, không cần thư viện
-ngoài stdlib (script KHÔNG dùng PySpark)::
+USAGE - run from the repository root with no arguments and no dependency beyond
+the standard library (the script does NOT use PySpark)::
 
     python3 src/generate_logs.py
 
-Mặc định ghi ra ``data/raw_logs.txt``. Đường dẫn được suy ra từ vị trí của
-chính file script này nên chạy từ thư mục nào cũng cho kết quả giống nhau -
-KHÔNG hardcode đường dẫn tuyệt đối.
+The default output is ``data/raw_logs.txt``. The path is derived from this
+script's location, so execution from any working directory produces the same
+result. No absolute path is hard-coded.
 """
 
 from __future__ import annotations
@@ -79,44 +79,44 @@ from typing import Dict, List, Tuple
 
 
 # --------------------------------------------------------------------------
-# Hằng số cấu hình
+# Configuration constants
 # --------------------------------------------------------------------------
 
-#: Tổng số bản ghi sinh ra mặc định. Chia hết cho 40 để 90/10 và 4 loại lỗi
-#: đều chia trọn vẹn, không phát sinh sai số làm tròn.
+#: Default total number of generated records. It is divisible by 40 so the
+#: 90/10 split and four malformed categories require no rounding.
 DEFAULT_TOTAL_RECORDS = 10_000
 
-#: Tỉ lệ bản ghi hợp lệ theo yêu cầu đề bài.
+#: Required ratio of valid records.
 VALID_RATIO = 0.9
 
-#: Seed mặc định để kết quả tái lập được (ID7 QA clean-clone chạy lại ra y hệt).
+#: Default seed for reproducible output across ID7 clean-clone QA runs.
 DEFAULT_SEED = 20260922
 
-#: Thư mục gốc của repo. Script nằm trong ``src/`` nên gốc là thư mục cha.
+#: Repository root. This script is in ``src/``, so the root is its parent.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: Đường dẫn output mặc định, tương đối so với gốc repo. Vị trí này do ID6 quy
-#: định trong README và được giữ lại tường minh bởi ``!data/raw_logs.txt``
-#: trong ``.gitignore``.
+#: Default output path relative to the repository root. ID6 defines this
+#: location in the README, and ``!data/raw_logs.txt`` explicitly preserves it
+#: in ``.gitignore``.
 DEFAULT_OUTPUT_RELPATH = Path("data") / "raw_logs.txt"
 
 
 # --------------------------------------------------------------------------
-# Bảng tra cứu IP -> quốc gia (interface dùng chung với Broadcast ở Task 2.4)
+# IP-to-country lookup table (shared interface with the Task 2.4 broadcast)
 # --------------------------------------------------------------------------
 
-#: Khóa là tiền tố /24 (ba octet đầu của địa chỉ IPv4), giá trị là tên quốc gia.
+#: Keys are /24 prefixes (the first three IPv4 octets); values are country names.
 #:
-#: Cách tra cứu phía consumer (Task 2.4 - Broadcast enrichment)::
+#: Consumer-side lookup (Task 2.4 broadcast enrichment)::
 #:
 #:     prefix = record["ip"].rsplit(".", 1)[0]
 #:     country = broadcast_map.value.get(prefix)
 #:
-#: Dùng /24 thay vì từng IP đầy đủ để bảng đủ nhỏ cho Broadcast mà vẫn phủ
-#: được toàn bộ 254 địa chỉ host trong mỗi dải.
+#: /24 prefixes keep the broadcast table small while covering all 254 host
+#: addresses in each range.
 #:
-#: Toàn bộ dải IP dưới đây nằm trong không gian private (RFC 1918) nên đây là
-#: dữ liệu tổng hợp, không trỏ tới hạ tầng thật của bất kỳ tổ chức nào.
+#: All ranges below are in private RFC 1918 address space. The data is synthetic
+#: and does not point to the real infrastructure of any organisation.
 IP_COUNTRY_MAP: Dict[str, str] = {
     "10.10.1": "Vietnam",
     "10.10.2": "Vietnam",
@@ -136,8 +136,8 @@ IP_COUNTRY_MAP: Dict[str, str] = {
     "192.168.50": "Indonesia",
 }
 
-#: Trọng số lưu lượng theo tiền tố, để kết quả Top 10 Countries có phân bố
-#: lệch rõ ràng thay vì đều nhau (giúp kiểm chứng thứ hạng dễ hơn).
+#: Traffic weights by prefix create a clearly non-uniform Top 10 Countries
+#: distribution, making the ranking easier to verify.
 PREFIX_WEIGHTS: Dict[str, int] = {
     "10.10.1": 90,
     "10.10.2": 70,
@@ -159,7 +159,7 @@ PREFIX_WEIGHTS: Dict[str, int] = {
 
 
 # --------------------------------------------------------------------------
-# Kho giá trị để sinh bản ghi hợp lệ
+# Value pools for generating valid records
 # --------------------------------------------------------------------------
 
 MONTH_ABBREVIATIONS: Tuple[str, ...] = (
@@ -217,13 +217,13 @@ USER_AGENTS: Tuple[str, ...] = (
 
 
 # --------------------------------------------------------------------------
-# Mẫu nhận dạng dùng cho bước tự kiểm tra (self-check)
+# Patterns used by the self-check
 # --------------------------------------------------------------------------
 
-#: Cấu trúc dòng log theo đúng hợp đồng mô tả ở docstring đầu file. Mẫu này
-#: chỉ phục vụ self-check của chính generator; nguồn chân lý khi xử lý dữ liệu
-#: là ``LOG_PATTERN`` trong ``rdd_processing.py`` của ID1 (hai mẫu phải tương
-#: đương nhau về cấu trúc).
+#: Log-line structure matching the contract in the module docstring. This
+#: pattern is used only by the generator's self-check. The source of truth for
+#: processing is ID1's ``LOG_PATTERN`` in ``rdd_processing.py``; both patterns
+#: must be structurally equivalent.
 LOG_LINE_PATTERN = re.compile(
     r'^(?P<ip>\S+)\s+\S+\s+\S+\s+'
     r'\[(?P<timestamp>[^\]]+)\]\s+'
@@ -237,7 +237,7 @@ REQUEST_PATTERN = re.compile(
     r"^(?P<method>[A-Z]+)\s+(?P<endpoint>\S+)\s+HTTP/\d+(?:\.\d+)?$"
 )
 
-#: Nhãn của 4 loại lỗi, xếp theo đúng thứ tự ưu tiên của taxonomy.
+#: Labels for the four malformed categories in taxonomy priority order.
 MALFORMED_KINDS: Tuple[str, ...] = (
     "missing_field",
     "invalid_ipv4",
@@ -247,33 +247,35 @@ MALFORMED_KINDS: Tuple[str, ...] = (
 
 
 # --------------------------------------------------------------------------
-# Phân loại bản ghi theo taxonomy (thứ tự ưu tiên, mutually exclusive)
+# Classify records by the ordered, mutually exclusive taxonomy
 # --------------------------------------------------------------------------
 
 def classify_line(line: str) -> str:
-    """Phân loại một dòng log vào ĐÚNG MỘT nhãn theo taxonomy.
+    """Classify one log line into EXACTLY ONE taxonomy label.
 
-    Trả về ``"valid"`` hoặc một trong 4 nhãn của :data:`MALFORMED_KINDS`.
-    Việc kiểm tra tuân thủ nghiêm ngặt thứ tự ưu tiên 1 -> 2 -> 3 -> 4 và dừng
-    ở loại đầu tiên khớp, nên kết quả luôn loại trừ lẫn nhau.
+    Return ``"valid"`` or one of the four labels in
+    :data:`MALFORMED_KINDS`. Checks strictly follow priority order
+    1 -> 2 -> 3 -> 4 and stop at the first match, keeping categories mutually
+    exclusive.
 
-    Nhãn ``"status_out_of_range"`` nằm NGOÀI taxonomy và chỉ xuất hiện nếu
-    generator có lỗi; hàm :func:`_self_check` khẳng định nó không bao giờ xảy ra.
+    The ``"status_out_of_range"`` label is outside the taxonomy and appears
+    only if the generator is defective; :func:`_self_check` asserts that it
+    never occurs.
     """
 
     match = LOG_LINE_PATTERN.fullmatch(line.strip())
 
-    # (1) Thiếu trường: không tách đủ số trường mà schema yêu cầu.
+    # (1) Missing field: not enough fields can be extracted for the schema.
     if match is None:
         return "missing_field"
 
-    # (2) IPv4 sai định dạng.
+    # (2) Invalid IPv4 format.
     try:
         ipaddress.IPv4Address(match.group("ip"))
     except ipaddress.AddressValueError:
         return "invalid_ipv4"
 
-    # (3) Status code không phải số nguyên.
+    # (3) The status code is not an integer.
     try:
         status_code = int(match.group("status"))
     except ValueError:
@@ -282,7 +284,7 @@ def classify_line(line: str) -> str:
     if not 100 <= status_code <= 599:
         return "status_out_of_range"
 
-    # (4) Request sai cấu trúc method / endpoint / phiên bản HTTP.
+    # (4) Malformed method, endpoint, or HTTP version in the request.
     if REQUEST_PATTERN.fullmatch(match.group("request")) is None:
         return "malformed_request"
 
@@ -290,11 +292,11 @@ def classify_line(line: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Sinh từng thành phần của bản ghi
+# Generate individual record components
 # --------------------------------------------------------------------------
 
 def _random_prefix(rng: random.Random) -> str:
-    """Chọn ngẫu nhiên một tiền tố /24 theo trọng số lưu lượng."""
+    """Select a random /24 prefix according to the traffic weights."""
 
     prefixes = list(PREFIX_WEIGHTS)
     weights = [PREFIX_WEIGHTS[prefix] for prefix in prefixes]
@@ -302,13 +304,13 @@ def _random_prefix(rng: random.Random) -> str:
 
 
 def _random_ip(rng: random.Random) -> str:
-    """Sinh một địa chỉ IPv4 hợp lệ nằm trong một dải /24 đã khai báo."""
+    """Generate a valid IPv4 address from a declared /24 range."""
 
     return "{}.{}".format(_random_prefix(rng), rng.randint(1, 254))
 
 
 def _random_timestamp(rng: random.Random) -> str:
-    """Sinh timestamp dạng ``dd/Mon/yyyy:HH:MM:SS +0700`` (không phụ thuộc locale)."""
+    """Generate a locale-independent ``dd/Mon/yyyy:HH:MM:SS +0700`` timestamp."""
 
     return "{day:02d}/{month}/{year}:{hour:02d}:{minute:02d}:{second:02d} +0700".format(
         day=rng.randint(1, 28),
@@ -321,7 +323,7 @@ def _random_timestamp(rng: random.Random) -> str:
 
 
 def _random_request(rng: random.Random) -> str:
-    """Sinh phần request hợp lệ: ``METHOD endpoint HTTP/x.y``."""
+    """Generate a valid request component: ``METHOD endpoint HTTP/x.y``."""
 
     return "{} {} {}".format(
         rng.choice(HTTP_METHODS),
@@ -339,7 +341,7 @@ def _format_line(
     referer: str = None,
     user_agent: str = None,
 ) -> str:
-    """Ghép các thành phần thành một dòng log hoàn chỉnh."""
+    """Combine the components into a complete log line."""
 
     line = '{ip} - - [{ts}] "{req}" {status} {nbytes}'.format(
         ip=ip, ts=timestamp, req=request, status=status, nbytes=num_bytes
@@ -350,7 +352,7 @@ def _format_line(
 
 
 def generate_valid_line(rng: random.Random) -> str:
-    """Sinh một bản ghi HỢP LỆ đầy đủ theo hợp đồng định dạng."""
+    """Generate a complete VALID record that follows the format contract."""
 
     include_optional_fields = rng.random() < 0.75
     return _format_line(
@@ -365,7 +367,7 @@ def generate_valid_line(rng: random.Random) -> str:
 
 
 def generate_missing_field_line(rng: random.Random) -> str:
-    """Loại 1 - Thiếu trường: số trường tách được ít hơn schema yêu cầu."""
+    """Type 1 - Missing field: fewer fields than required by the schema."""
 
     ip = _random_ip(rng)
     timestamp = _random_timestamp(rng)
@@ -375,33 +377,33 @@ def generate_missing_field_line(rng: random.Random) -> str:
 
     variant = rng.randint(0, 2)
     if variant == 0:
-        # Thiếu hẳn trường bytes ở cuối.
+        # Omit the trailing bytes field entirely.
         return '{ip} - - [{ts}] "{req}" {status}'.format(
             ip=ip, ts=timestamp, req=request, status=status
         )
     if variant == 1:
-        # Thiếu trường authuser (chỉ còn một dấu gạch ngang thay vì hai).
+        # Omit authuser, leaving one hyphen instead of two.
         return '{ip} - [{ts}] "{req}" {status} {nbytes}'.format(
             ip=ip, ts=timestamp, req=request, status=status, nbytes=num_bytes
         )
-    # Thiếu hẳn trường timestamp.
+    # Omit the timestamp field entirely.
     return '{ip} - - "{req}" {status} {nbytes}'.format(
         ip=ip, req=request, status=status, nbytes=num_bytes
     )
 
 
 def generate_invalid_ipv4_line(rng: random.Random) -> str:
-    """Loại 2 - Đủ trường, nhưng trường IP không đúng định dạng IPv4."""
+    """Type 2 - All fields exist, but the IP is not valid IPv4."""
 
     prefix = _random_prefix(rng)
     broken_ip = rng.choice(
         (
             "999.{}.{}".format(rng.randint(0, 255), rng.randint(0, 255)),
-            prefix,                                    # chỉ có 3 octet
-            "{}.{}.5".format(prefix, rng.randint(1, 254)),  # thừa thành 5 octet
-            "{}.abc".format(prefix),                   # octet không phải số
-            "{}.{}".format(prefix, rng.randint(256, 999)),  # octet vượt 255
-            "-",                                       # hoàn toàn không phải IP
+            prefix,                                    # only three octets
+            "{}.{}.5".format(prefix, rng.randint(1, 254)),  # five octets
+            "{}.abc".format(prefix),                   # non-numeric octet
+            "{}.{}".format(prefix, rng.randint(256, 999)),  # octet above 255
+            "-",                                       # not an IP address
         )
     )
     return _format_line(
@@ -416,7 +418,7 @@ def generate_invalid_ipv4_line(rng: random.Random) -> str:
 
 
 def generate_non_numeric_status_line(rng: random.Random) -> str:
-    """Loại 3 - Đủ trường, IP hợp lệ, status không parse được thành số nguyên."""
+    """Type 3 - Fields and IP are valid, but status is not an integer."""
 
     broken_status = rng.choice(("OK", "2xx", "-", "NaN", "20O", "ERROR", "null"))
     return _format_line(
@@ -431,19 +433,19 @@ def generate_non_numeric_status_line(rng: random.Random) -> str:
 
 
 def generate_malformed_request_line(rng: random.Random) -> str:
-    """Loại 4 - Đủ trường, IP và status hợp lệ, nhưng request sai cấu trúc."""
+    """Type 4 - Fields, IP, and status are valid, but the request is malformed."""
 
     endpoint = rng.choice(ENDPOINTS)
     method = rng.choice(HTTP_METHODS)
     broken_request = rng.choice(
         (
-            "{}-only".format(method),                  # không tách được 3 phần
-            "{} {}".format(method, endpoint),          # thiếu phiên bản HTTP
-            "{} {}".format(method.lower(), endpoint),  # thiếu HTTP + method thường
-            "{} {} HTTP/1.1".format(method.lower(), endpoint),  # method viết thường
-            "{} HTTP/1.1".format(endpoint),            # thiếu method
-            "{} {} HTTP/1.1 extra".format(method, endpoint),    # thừa thành phần
-            "{} {} HTTPS/1.1".format(method, endpoint),         # sai tên giao thức
+            "{}-only".format(method),                  # cannot split into three parts
+            "{} {}".format(method, endpoint),          # missing HTTP version
+            "{} {}".format(method.lower(), endpoint),  # no HTTP version, lowercase method
+            "{} {} HTTP/1.1".format(method.lower(), endpoint),  # lowercase method
+            "{} HTTP/1.1".format(endpoint),            # missing method
+            "{} {} HTTP/1.1 extra".format(method, endpoint),    # extra component
+            "{} {} HTTPS/1.1".format(method, endpoint),         # incorrect protocol name
         )
     )
     return _format_line(
@@ -457,7 +459,7 @@ def generate_malformed_request_line(rng: random.Random) -> str:
     )
 
 
-#: Ánh xạ nhãn lỗi -> hàm sinh tương ứng.
+#: Map each malformed label to its generator function.
 MALFORMED_GENERATORS = {
     "missing_field": generate_missing_field_line,
     "invalid_ipv4": generate_invalid_ipv4_line,
@@ -467,15 +469,16 @@ MALFORMED_GENERATORS = {
 
 
 # --------------------------------------------------------------------------
-# Sinh toàn bộ tập dữ liệu
+# Generate the complete dataset
 # --------------------------------------------------------------------------
 
 def _split_counts(total: int) -> Tuple[int, Dict[str, int]]:
-    """Chia ``total`` thành số bản ghi hợp lệ và số bản ghi cho từng loại lỗi.
+    """Split ``total`` into valid records and records for each malformed type.
 
-    Việc chia là CỐ ĐỊNH (không ngẫu nhiên) nên tỉ lệ 90/10 luôn chính xác
-    tuyệt đối. Phần dư do chia không hết được dồn vào nhóm hợp lệ để tổng số
-    dòng luôn đúng bằng ``total``.
+    Allocation is DETERMINISTIC rather than random, so the 90/10 ratio remains
+    exact. Any remainder from an uneven malformed-category split is assigned in
+    taxonomy order, and the valid count keeps the total number of lines equal
+    to ``total``.
     """
 
     malformed_total = round(total * (1 - VALID_RATIO))
@@ -491,7 +494,7 @@ def _split_counts(total: int) -> Tuple[int, Dict[str, int]]:
 
 
 def generate_lines(total: int, seed: int) -> List[str]:
-    """Sinh danh sách dòng log đã trộn ngẫu nhiên, với tỉ lệ 90/10 chính xác."""
+    """Generate shuffled log lines with an exact 90/10 ratio."""
 
     rng = random.Random(seed)
     valid_count, malformed_counts = _split_counts(total)
@@ -506,11 +509,11 @@ def generate_lines(total: int, seed: int) -> List[str]:
 
 
 # --------------------------------------------------------------------------
-# Tự kiểm tra sau khi sinh
+# Post-generation self-check
 # --------------------------------------------------------------------------
 
 def _self_check(lines: List[str], expected_total: int) -> Dict[str, int]:
-    """Kiểm chứng tập dữ liệu vừa sinh; ném ``AssertionError`` nếu sai hợp đồng."""
+    """Validate generated data and raise ``AssertionError`` on contract violations."""
 
     counts: Dict[str, int] = {"valid": 0, "status_out_of_range": 0}
     counts.update({kind: 0 for kind in MALFORMED_KINDS})
@@ -537,8 +540,8 @@ def _self_check(lines: List[str], expected_total: int) -> Dict[str, int]:
         )
         assert expected_count >= 1, "Loại lỗi '{}' phải xuất hiện ít nhất 1 lần".format(kind)
 
-    # Mọi IP đúng cú pháp xuất hiện trong dữ liệu đều phải được IP_COUNTRY_MAP phủ.
-    # Riêng loại lỗi 'invalid_ipv4' cố tình mang IP hỏng nên được loại trừ.
+    # Every syntactically valid IP in the dataset must be covered by
+    # IP_COUNTRY_MAP. The intentional 'invalid_ipv4' category is excluded.
     uncovered = set()
     for line in lines:
         if classify_line(line) == "invalid_ipv4":
@@ -555,7 +558,7 @@ def _self_check(lines: List[str], expected_total: int) -> Dict[str, int]:
 
 
 # --------------------------------------------------------------------------
-# Điểm vào
+# Entry point
 # --------------------------------------------------------------------------
 
 def _parse_args(argv: List[str] = None) -> argparse.Namespace:
